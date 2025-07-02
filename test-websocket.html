@@ -17,7 +17,7 @@
         }
         
         try {
-            const ws = new WebSocket('ws://localhost:8080/ws?userId=test123&roomId=test&username=测试用户');
+            const ws = new WebSocket('ws://192.168.5.27:8080/ws?userId=test123&roomId=test&username=测试用户');
             
             ws.onopen = function(event) {
                 status.textContent = '✅ WebSocket连接成功!';
