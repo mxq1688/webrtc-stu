@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -264,9 +265,16 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
-	// 设置CORS
+	// 设置CORS - 开发环境允许所有来源
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000"},
+		AllowOriginFunc: func(origin string) bool {
+			// 开发环境允许localhost和内网地址
+			return strings.Contains(origin, "localhost") ||
+				strings.Contains(origin, "127.0.0.1") ||
+				strings.Contains(origin, "192.168.") ||
+				strings.Contains(origin, "10.") ||
+				origin == "" // 允许直接访问
+		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"*"},
 		AllowCredentials: true,
@@ -274,6 +282,13 @@ func main() {
 
 	handler := c.Handler(r)
 
-	log.Println("WebRTC信令服务器启动在 :8080")
-	log.Fatal(http.ListenAndServe(":8080", handler))
+	// 启动HTTP服务器（用于健康检查）
+	go func() {
+		log.Println("HTTP服务器启动在 :8080")
+		log.Fatal(http.ListenAndServe(":8080", handler))
+	}()
+
+	// 启动HTTPS服务器（用于WebSocket和移动设备支持）
+	log.Println("HTTPS/WSS服务器启动在 :8443")
+	log.Fatal(http.ListenAndServeTLS(":8443", "localhost+3.pem", "localhost+3-key.pem", handler))
 }

@@ -2,7 +2,20 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 
-const WEBSOCKET_URL = 'ws://localhost:8080/ws';
+// 动态生成WebSocket URL
+const getWebSocketURL = (useHTTP = false) => {
+  const host = window.location.hostname;
+  
+  if (useHTTP || window.location.protocol === 'http:') {
+    // HTTP页面或强制使用HTTP WebSocket
+    console.log('🔧 使用HTTP WebSocket连接:', `ws://${host}:8080/ws`);
+    return `ws://${host}:8080/ws`;
+  } else {
+    // HTTPS页面使用WSS（使用mkcert生成的可信证书）
+    console.log('🔒 使用HTTPS WebSocket连接:', `wss://${host}:8443/ws`);
+    return `wss://${host}:8443/ws`;
+  }
+};
 
 function MeetingRoom() {
   const { roomId } = useParams();
@@ -48,22 +61,126 @@ function MeetingRoom() {
 
   const initializeMedia = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
-      });
+      console.log('🎥 开始初始化媒体设备...');
+      
+      // 检测是否为移动设备
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      console.log('📱 设备类型:', isMobile ? '移动设备' : '桌面设备');
+      
+      // 针对移动设备优化的媒体约束
+      const constraints = {
+        video: {
+          width: isMobile ? { ideal: 640, max: 1280 } : { ideal: 1280 },
+          height: isMobile ? { ideal: 480, max: 720 } : { ideal: 720 },
+          frameRate: { ideal: 30, max: 30 },
+          facingMode: isMobile ? 'user' : undefined  // 前置摄像头
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      };
+
+      console.log('🎬 请求媒体权限，约束:', constraints);
+
+      // 检查浏览器是否支持getUserMedia
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('您的浏览器不支持WebRTC功能，请升级浏览器或使用Chrome/Firefox/Safari');
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      console.log('✅ 媒体流获取成功:', stream.getTracks().map(track => `${track.kind}: ${track.label}`));
+      
       setLocalStream(stream);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
+      
+      // 清除错误信息
+      setError('');
+      
     } catch (err) {
-      console.error('获取媒体设备失败:', err);
-      setError('无法访问摄像头或麦克风，请检查设备权限');
+      console.error('❌ 获取媒体设备失败:', err);
+      
+      let errorMessage = '';
+      
+      // 根据错误类型提供具体的解决方案
+      switch (err.name) {
+        case 'NotAllowedError':
+        case 'PermissionDeniedError':
+          errorMessage = '📱 摄像头权限被拒绝。请在浏览器设置中允许访问摄像头和麦克风权限，然后刷新页面重试。';
+          break;
+        case 'NotFoundError':
+        case 'DevicesNotFoundError':
+          errorMessage = '📷 未找到摄像头设备。请确保设备连接正常，或尝试连接外部摄像头。';
+          break;
+        case 'NotReadableError':
+        case 'TrackStartError':
+          errorMessage = '🔧 摄像头正被其他应用使用。请关闭其他视频应用后重试。';
+          break;
+        case 'OverconstrainedError':
+        case 'ConstraintNotSatisfiedError':
+          errorMessage = '⚙️ 摄像头不支持请求的配置。正在尝试备用配置...';
+          // 尝试更基础的配置
+          setTimeout(() => tryFallbackConstraints(), 1000);
+          break;
+        case 'NotSupportedError':
+          errorMessage = '🌐 您的浏览器不支持WebRTC。请使用Chrome、Firefox、Safari或Edge浏览器。';
+          break;
+        case 'AbortError':
+          errorMessage = '⏱️ 设备访问请求超时。请重试或检查设备连接。';
+          break;
+        default:
+          if (err.message.includes('Only secure origins are allowed')) {
+            errorMessage = '🔒 安全限制：移动设备需要HTTPS访问。请使用安全连接或尝试桌面浏览器。';
+          } else {
+            errorMessage = `❌ 未知错误: ${err.message}。请刷新页面重试或联系技术支持。`;
+          }
+      }
+      
+      setError(errorMessage);
+      
+      // 如果是权限问题，显示权限指导
+      if (err.name === 'NotAllowedError') {
+        setTimeout(() => {
+          setError(prev => prev + '\n\n💡 权限设置指南:\n1. 点击地址栏左侧的锁定图标\n2. 选择"允许"摄像头和麦克风\n3. 刷新页面重新加入会议');
+        }, 2000);
+      }
     }
   };
 
-  const connectWebSocket = () => {
-    const wsUrl = `${WEBSOCKET_URL}?userId=${userId.current}&roomId=${roomId}&username=${encodeURIComponent(username)}`;
+  // 备用配置尝试
+  const tryFallbackConstraints = async () => {
+    try {
+      console.log('🔄 尝试备用媒体配置...');
+      
+      const fallbackConstraints = {
+        video: true,  // 最简配置
+        audio: true
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+      console.log('✅ 备用配置成功:', stream.getTracks().map(track => `${track.kind}: ${track.label}`));
+      
+      setLocalStream(stream);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+      setError('✅ 已使用备用配置成功连接摄像头');
+      
+      // 3秒后清除成功消息
+      setTimeout(() => setError(''), 3000);
+      
+    } catch (fallbackErr) {
+      console.error('❌ 备用配置也失败:', fallbackErr);
+      setError('❌ 所有配置都失败了。请检查设备权限设置或尝试重新插拔摄像头。');
+    }
+  };
+
+  const connectWebSocket = (useHTTPFallback = false) => {
+    const baseWsUrl = getWebSocketURL(useHTTPFallback);
+    const wsUrl = `${baseWsUrl}?userId=${userId.current}&roomId=${roomId}&username=${encodeURIComponent(username)}`;
     console.log('🔗 尝试连接WebSocket:', wsUrl);
     console.log('🔗 连接参数:', { userId: userId.current, roomId, username });
     
@@ -101,7 +218,13 @@ function MeetingRoom() {
 
     websocketRef.current.onerror = (error) => {
       console.error('❌ WebSocket错误:', error);
-      setError('服务器连接失败，请检查网络连接');
+      
+      // HTTPS页面必须使用WSS，不能降级到WS
+      if (window.location.protocol === 'https:') {
+        setError('🔒 证书连接失败。请确保访问地址正确，或尝试刷新页面。如果问题持续，请联系管理员。');
+      } else {
+        setError('服务器连接失败，请检查网络连接');
+      }
     };
   };
 
@@ -283,6 +406,11 @@ function MeetingRoom() {
     navigate('/');
   };
 
+  const retryMediaAccess = () => {
+    setError('🔄 正在重新尝试获取摄像头权限...');
+    initializeMedia();
+  };
+
   const cleanup = () => {
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop());
@@ -311,7 +439,20 @@ function MeetingRoom() {
         </button>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      {error && (
+        <div className="error">
+          {error}
+          {(error.includes('权限') || error.includes('失败') || error.includes('错误')) && (
+            <button 
+              className="btn" 
+              onClick={retryMediaAccess}
+              style={{ marginTop: '10px', fontSize: '14px' }}
+            >
+              🔄 重新尝试
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="video-container">
         {/* 本地视频 */}
@@ -322,6 +463,10 @@ function MeetingRoom() {
             autoPlay
             muted
             playsInline
+            webkit-playsinline="true"
+            x5-playsinline="true"
+            x5-video-player-type="h5"
+            x5-video-player-fullscreen="false"
           />
           <div className="video-overlay">
             {username} (我)
@@ -337,6 +482,10 @@ function MeetingRoom() {
                 className="video"
                 autoPlay
                 playsInline
+                webkit-playsinline="true"
+                x5-playsinline="true"
+                x5-video-player-type="h5"
+                x5-video-player-fullscreen="false"
                 ref={(el) => {
                   if (el && stream) {
                     el.srcObject = stream;
