@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -268,41 +267,39 @@ func main() {
 	hub := newHub()
 	go hub.run()
 
-	r := mux.NewRouter()
-	r.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		serveWS(hub, w, r)
-	})
+	router := mux.NewRouter()
 
-	// 健康检查端点
-	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
-
-	// 设置CORS - 开发环境允许所有来源
+	// 配置CORS
 	c := cors.New(cors.Options{
-		AllowOriginFunc: func(origin string) bool {
-			// 开发环境允许localhost和内网地址
-			return strings.Contains(origin, "localhost") ||
-				strings.Contains(origin, "127.0.0.1") ||
-				strings.Contains(origin, "192.168.") ||
-				strings.Contains(origin, "10.") ||
-				origin == "" // 允许直接访问
-		},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedOrigins:   []string{"https://localhost:3000", "https://192.168.5.27:3000"},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
 		AllowedHeaders:   []string{"*"},
 		AllowCredentials: true,
 	})
 
-	handler := c.Handler(r)
+	// WebSocket路由
+	router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		serveWS(hub, w, r)
+	})
 
-	// 启动HTTP服务器（用于健康检查）
+	// 健康检查路由
+	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	handler := c.Handler(router)
+
+	// 同时启动HTTP和HTTPS服务器
 	go func() {
-		log.Println("HTTP服务器启动在 :8080")
-		log.Fatal(http.ListenAndServe(":8080", handler))
+		log.Printf("🚀 HTTP服务器启动在 http://localhost:8080")
+		if err := http.ListenAndServe(":8080", handler); err != nil {
+			log.Printf("HTTP服务器错误: %v", err)
+		}
 	}()
 
-	// 启动HTTPS服务器（用于WebSocket和移动设备支持）
-	log.Println("HTTPS/WSS服务器启动在 :8443")
-	log.Fatal(http.ListenAndServeTLS(":8443", "localhost+3.pem", "localhost+3-key.pem", handler))
+	log.Printf("🔒 HTTPS服务器启动在 https://localhost:8443")
+	if err := http.ListenAndServeTLS(":8443", "localhost+1.pem", "localhost+1-key.pem", handler); err != nil {
+		log.Fatal("HTTPS服务器错误:", err)
+	}
 }

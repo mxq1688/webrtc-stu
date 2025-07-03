@@ -5,11 +5,11 @@ import { v4 as uuidv4 } from 'uuid';
 // 动态生成WebSocket URL
 const getWebSocketURL = () => {
   const host = window.location.hostname;
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const port = protocol === 'wss:' ? '8443' : '8080';
+  const protocol = 'wss:';  // 始终使用WSS
+  const port = '8443';      // 始终使用HTTPS端口
   
   const wsUrl = `${protocol}//${host}:${port}/ws`;
-  console.log(`${protocol === 'wss:' ? '🔒' : '🔧'} 使用${protocol}WebSocket连接:`, wsUrl);
+  console.log('🔒 使用安全WebSocket连接:', wsUrl);
   return wsUrl;
 };
 
