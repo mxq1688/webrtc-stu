@@ -3,18 +3,14 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 
 // 动态生成WebSocket URL
-const getWebSocketURL = (useHTTP = false) => {
+const getWebSocketURL = () => {
   const host = window.location.hostname;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const port = protocol === 'wss:' ? '8443' : '8080';
   
-  if (useHTTP || window.location.protocol === 'http:') {
-    // HTTP页面或强制使用HTTP WebSocket
-    console.log('🔧 使用HTTP WebSocket连接:', `ws://${host}:8080/ws`);
-    return `ws://${host}:8080/ws`;
-  } else {
-    // HTTPS页面使用WSS（使用mkcert生成的可信证书）
-    console.log('🔒 使用HTTPS WebSocket连接:', `wss://${host}:8443/ws`);
-    return `wss://${host}:8443/ws`;
-  }
+  const wsUrl = `${protocol}//${host}:${port}/ws`;
+  console.log(`${protocol === 'wss:' ? '🔒' : '🔧'} 使用${protocol}WebSocket连接:`, wsUrl);
+  return wsUrl;
 };
 
 function MeetingRoom() {
@@ -41,8 +37,14 @@ function MeetingRoom() {
   const servers = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ]
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' }
+    ],
+    iceCandidatePoolSize: 10,
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require'
   };
 
   useEffect(() => {
@@ -229,67 +231,176 @@ function MeetingRoom() {
   };
 
   const handleWebSocketMessage = async (message) => {
-    console.log('收到消息:', message);
+    console.log('📩 收到消息:', message.type, message);
 
     switch (message.type) {
       case 'user-list':
+        console.log('👥 更新用户列表:', message.data);
         setUsers(message.data || []);
+        // 为每个已存在的用户创建连接
+        for (const user of message.data || []) {
+          if (user.id !== userId.current && !peerConnectionsRef.current.has(user.id)) {
+            console.log('🔄 为现有用户创建连接:', user.id);
+            await createPeerConnection(user.id);
+            await createOffer(user.id);
+          }
+        }
         break;
         
       case 'user-joined':
         if (message.userId !== userId.current) {
+          console.log('👋 新用户加入:', message.username);
           setUsers(prev => [...prev, { id: message.userId, username: message.username }]);
-          await createPeerConnection(message.userId);
-          await createOffer(message.userId);
+          if (!peerConnectionsRef.current.has(message.userId)) {
+            console.log('🔄 为新用户创建连接:', message.userId);
+            await createPeerConnection(message.userId);
+            await createOffer(message.userId);
+          }
         }
         break;
         
       case 'user-left':
+        console.log('👋 用户离开:', message.userId);
         setUsers(prev => prev.filter(user => user.id !== message.userId));
         closePeerConnection(message.userId);
         break;
         
       case 'offer':
+        console.log('📨 收到offer:', message.userId);
         await handleOffer(message);
         break;
         
       case 'answer':
+        console.log('📨 收到answer:', message.userId);
         await handleAnswer(message);
         break;
         
       case 'ice-candidate':
+        console.log('🧊 收到ICE候选者:', message.userId);
         await handleIceCandidate(message);
         break;
     }
   };
 
   const createPeerConnection = async (remoteUserId) => {
+    console.log('🔧 创建PeerConnection:', remoteUserId);
     const peerConnection = new RTCPeerConnection(servers);
     peerConnectionsRef.current.set(remoteUserId, peerConnection);
 
     // 添加本地流
     if (localStream) {
-      localStream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, localStream);
-      });
+        console.log('📤 添加本地流到PeerConnection');
+        localStream.getTracks().forEach(track => {
+            try {
+                const sender = peerConnection.addTrack(track, localStream);
+                console.log('✅ 成功添加轨道:', track.kind, sender);
+            } catch (err) {
+                console.error('❌ 添加轨道失败:', track.kind, err);
+            }
+        });
+    } else {
+        console.warn('⚠️ 本地流不存在，无法添加轨道');
     }
 
     // 处理远程流
     peerConnection.ontrack = (event) => {
-      console.log('收到远程流:', event);
-      const [remoteStream] = event.streams;
-      setRemoteStreams(prev => new Map(prev.set(remoteUserId, remoteStream)));
+        console.log('📥 收到远程流:', event.streams.length, '个流');
+        const [remoteStream] = event.streams;
+        if (!remoteStream) {
+            console.error('❌ 远程流为空');
+            return;
+        }
+        console.log('远程流详情:', {
+            id: remoteStream.id,
+            视频轨道: remoteStream.getVideoTracks().length,
+            音频轨道: remoteStream.getAudioTracks().length,
+            活跃: remoteStream.active
+        });
+        
+        // 检查轨道状态
+        remoteStream.getTracks().forEach(track => {
+            console.log(`轨道状态 [${track.kind}]:`, {
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState
+            });
+            
+            track.onended = () => console.log(`轨道结束 [${track.kind}]`);
+            track.onmute = () => console.log(`轨道静音 [${track.kind}]`);
+            track.onunmute = () => console.log(`轨道取消静音 [${track.kind}]`);
+        });
+
+        setRemoteStreams(prev => {
+            const newStreams = new Map(prev);
+            newStreams.set(remoteUserId, remoteStream);
+            console.log('📊 更新后的远程流Map:', 
+                Array.from(newStreams.entries()).map(([id, stream]) => ({
+                    userId: id,
+                    streamId: stream.id,
+                    tracks: stream.getTracks().length
+                }))
+            );
+            return newStreams;
+        });
     };
 
     // 处理ICE候选者
     peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendMessage({
-          type: 'ice-candidate',
-          data: event.candidate,
-          targetUserId: remoteUserId
-        });
-      }
+        if (event.candidate) {
+            console.log('🧊 发送ICE候选者:', {
+                type: event.candidate.type,
+                protocol: event.candidate.protocol,
+                address: event.candidate.address,
+                port: event.candidate.port
+            });
+            sendMessage({
+                type: 'ice-candidate',
+                data: event.candidate,
+                targetUserId: remoteUserId
+            });
+        } else {
+            console.log('✅ ICE候选者收集完成');
+        }
+    };
+
+    // 监听ICE连接状态
+    peerConnection.oniceconnectionstatechange = () => {
+        console.log('🔄 ICE连接状态:', peerConnection.iceConnectionState);
+        if (peerConnection.iceConnectionState === 'failed') {
+            console.log('❌ ICE连接失败，尝试重启ICE');
+            peerConnection.restartIce();
+        }
+    };
+
+    // 监听ICE收集状态
+    peerConnection.onicegatheringstatechange = () => {
+        console.log('🔄 ICE收集状态:', peerConnection.iceGatheringState);
+    };
+
+    // 监听信令状态
+    peerConnection.onsignalingstatechange = () => {
+        console.log('🔄 信令状态:', peerConnection.signalingState);
+    };
+
+    // 监听连接状态
+    peerConnection.onconnectionstatechange = () => {
+        console.log('🔄 连接状态:', peerConnection.connectionState);
+        switch (peerConnection.connectionState) {
+            case 'connected':
+                console.log('✅ 与对等端连接成功');
+                break;
+            case 'disconnected':
+                console.log('⚠️ 与对等端连接断开');
+                break;
+            case 'failed':
+                console.log('❌ 连接失败，尝试重新创建连接');
+                closePeerConnection(remoteUserId);
+                setTimeout(() => createPeerConnection(remoteUserId), 1000);
+                break;
+            case 'closed':
+                console.log('❌ 连接已关闭');
+                break;
+        }
     };
 
     return peerConnection;
@@ -315,50 +426,84 @@ function MeetingRoom() {
 
   const handleOffer = async (message) => {
     const { userId: remoteUserId, data: offer } = message;
+    console.log('📨 处理Offer:', { remoteUserId, offer });
     
     let peerConnection = peerConnectionsRef.current.get(remoteUserId);
     if (!peerConnection) {
-      peerConnection = await createPeerConnection(remoteUserId);
+        console.log('🔄 为Offer创建新的PeerConnection');
+        peerConnection = await createPeerConnection(remoteUserId);
     }
 
     try {
-      await peerConnection.setRemoteDescription(offer);
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      
-      sendMessage({
-        type: 'answer',
-        data: answer,
-        targetUserId: remoteUserId
-      });
+        console.log('🔄 设置远程描述...');
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        console.log('✅ 远程描述设置成功');
+
+        console.log('🔄 创建Answer...');
+        const answer = await peerConnection.createAnswer();
+        console.log('✅ Answer创建成功');
+
+        console.log('🔄 设置本地描述...');
+        await peerConnection.setLocalDescription(answer);
+        console.log('✅ 本地描述设置成功');
+        
+        console.log('📤 发送Answer...');
+        sendMessage({
+            type: 'answer',
+            data: answer,
+            targetUserId: remoteUserId
+        });
+        console.log('✅ Answer发送成功');
     } catch (error) {
-      console.error('处理offer失败:', error);
+        console.error('❌ 处理Offer失败:', error);
+        // 尝试清理并重新创建连接
+        closePeerConnection(remoteUserId);
+        setTimeout(() => createPeerConnection(remoteUserId), 1000);
     }
   };
 
   const handleAnswer = async (message) => {
     const { userId: remoteUserId, data: answer } = message;
-    const peerConnection = peerConnectionsRef.current.get(remoteUserId);
+    console.log('📨 处理Answer:', { remoteUserId, answer });
     
-    if (peerConnection) {
-      try {
-        await peerConnection.setRemoteDescription(answer);
-      } catch (error) {
-        console.error('处理answer失败:', error);
-      }
+    const peerConnection = peerConnectionsRef.current.get(remoteUserId);
+    if (!peerConnection) {
+        console.error('❌ 未找到PeerConnection:', remoteUserId);
+        return;
+    }
+
+    try {
+        console.log('🔄 设置远程描述(Answer)...');
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        console.log('✅ Answer设置成功');
+    } catch (error) {
+        console.error('❌ 处理Answer失败:', error);
+        // 尝试重新协商
+        closePeerConnection(remoteUserId);
+        setTimeout(() => createPeerConnection(remoteUserId), 1000);
     }
   };
 
   const handleIceCandidate = async (message) => {
     const { userId: remoteUserId, data: candidate } = message;
-    const peerConnection = peerConnectionsRef.current.get(remoteUserId);
+    console.log('🧊 处理ICE候选者:', { remoteUserId, candidate });
     
-    if (peerConnection) {
-      try {
-        await peerConnection.addIceCandidate(candidate);
-      } catch (error) {
-        console.error('添加ICE候选者失败:', error);
-      }
+    const peerConnection = peerConnectionsRef.current.get(remoteUserId);
+    if (!peerConnection) {
+        console.error('❌ 未找到PeerConnection:', remoteUserId);
+        return;
+    }
+
+    try {
+        console.log('🔄 添加ICE候选者...');
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        console.log('✅ ICE候选者添加成功');
+    } catch (error) {
+        console.error('❌ 添加ICE候选者失败:', error);
+        if (peerConnection.remoteDescription === null) {
+            console.log('⚠️ 远程描述未设置，暂存ICE候选者');
+            // 可以选择将候选者暂存，等待远程描述设置后再添加
+        }
     }
   };
 

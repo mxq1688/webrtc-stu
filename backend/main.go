@@ -41,11 +41,12 @@ type Hub struct {
 }
 
 type Message struct {
-	Type     string      `json:"type"`
-	RoomID   string      `json:"roomId,omitempty"`
-	UserID   string      `json:"userId,omitempty"`
-	Username string      `json:"username,omitempty"`
-	Data     interface{} `json:"data,omitempty"`
+	Type         string      `json:"type"`
+	RoomID       string      `json:"roomId,omitempty"`
+	UserID       string      `json:"userId,omitempty"`
+	Username     string      `json:"username,omitempty"`
+	TargetUserID string      `json:"targetUserId,omitempty"`
+	Data         interface{} `json:"data,omitempty"`
 }
 
 func newHub() *Hub {
@@ -138,13 +139,26 @@ func (h *Hub) broadcastToRoom(roomID string, message *Message, excludeUserID str
 	}
 
 	room.mu.RLock()
-	for clientID, client := range room.Clients {
-		if clientID != excludeUserID {
+	// 如果指定了目标用户，只发送给目标用户
+	if message.TargetUserID != "" {
+		if client, exists := room.Clients[message.TargetUserID]; exists {
 			select {
 			case client.Send <- data:
 			default:
 				close(client.Send)
-				delete(room.Clients, clientID)
+				delete(room.Clients, message.TargetUserID)
+			}
+		}
+	} else {
+		// 广播给除了发送者之外的所有用户
+		for clientID, client := range room.Clients {
+			if clientID != excludeUserID {
+				select {
+				case client.Send <- data:
+				default:
+					close(client.Send)
+					delete(room.Clients, clientID)
+				}
 			}
 		}
 	}

@@ -47,7 +47,15 @@ function Home() {
             placeholder="请输入您的用户名"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && roomId ? handleJoinRoom() : handleCreateRoom()}
+            onKeyPress={(e) => {
+              if (e.key === 'Enter') {
+                if (roomId.trim()) {
+                  handleJoinRoom();
+                } else {
+                  handleCreateRoom();
+                }
+              }
+            }}
           />
           
           <input
@@ -56,7 +64,11 @@ function Home() {
             placeholder="请输入房间ID (可选)"
             value={roomId}
             onChange={(e) => setRoomId(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleJoinRoom()}
+            onKeyPress={(e) => {
+              if (e.key === 'Enter' && roomId.trim()) {
+                handleJoinRoom();
+              }
+            }}
           />
           
           <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
@@ -87,6 +99,24 @@ function Home() {
             <li>支持多人视频通话，音视频同步传输</li>
             <li>确保浏览器允许摄像头和麦克风权限</li>
           </ul>
+          
+          {/* 移动端访问提示 */}
+          {window.location.protocol === 'https:' && (
+            <div style={{ marginTop: '20px', padding: '15px', background: '#e3f2fd', borderRadius: '8px' }}>
+              <h4 style={{ color: '#1976d2', marginTop: 0 }}>📱 移动端访问说明</h4>
+              <p style={{ color: '#666', margin: '10px 0' }}>
+                移动端需要信任SSL证书才能正常使用：
+              </p>
+              <ol style={{ color: '#666', paddingLeft: '20px' }}>
+                <li>先访问并信任: <a href="https://192.168.5.27:8443/health" target="_blank" rel="noopener noreferrer">https://192.168.5.27:8443/health</a></li>
+                <li>然后访问: <a href="https://192.168.5.27:3002" target="_blank" rel="noopener noreferrer">https://192.168.5.27:3002</a></li>
+              </ol>
+              <p style={{ color: '#666', marginTop: '10px' }}>
+                <a href="/cert-guide.html" target="_blank" style={{ color: '#1976d2' }}>查看详细证书安装指南</a> | 
+                <a href="/rootCA.pem" download style={{ color: '#1976d2', marginLeft: '10px' }}>下载根证书</a>
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

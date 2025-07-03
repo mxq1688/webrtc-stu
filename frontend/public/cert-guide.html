@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>移动端证书安装指南</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }
+        h1 { color: #333; text-align: center; }
+        .step { margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; }
+        .step h3 { color: #007bff; margin-top: 0; }
+        .btn { display: inline-block; padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+        .warning { background: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; margin: 10px 0; }
+        .success { background: #d4edda; color: #155724; padding: 10px; border-radius: 5px; margin: 10px 0; }
+        .platform { margin: 20px 0; }
+        .code { background: #f1f1f1; padding: 10px; border-radius: 5px; font-family: monospace; word-break: break-all; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📱 移动端SSL证书安装指南</h1>
+        
+        <div class="warning">
+            ⚠️ <strong>为什么需要安装证书？</strong><br>
+            移动设备必须使用HTTPS才能访问摄像头，但我们的开发证书需要手动信任。
+        </div>
+
+        <div class="step">
+            <h3>步骤1：下载根证书</h3>
+            <p>点击下面的按钮下载mkcert根证书：</p>
+            <a href="/rootCA.pem" class="btn" download>📥 下载根证书</a>
+            <p><small>或者访问: http://192.168.5.27:3001/rootCA.pem</small></p>
+        </div>
+
+        <div class="platform">
+            <h2>📱 iOS (iPhone/iPad) 安装步骤</h2>
+            
+            <div class="step">
+                <h3>步骤2：安装描述文件</h3>
+                <ol>
+                    <li>下载证书后，会弹出"已下载描述文件"提示</li>
+                    <li>打开<strong>设置</strong> → <strong>通用</strong> → <strong>VPN与设备管理</strong></li>
+                    <li>在"已下载的描述文件"中找到 <strong>mkcert</strong></li>
+                    <li>点击并选择<strong>安装</strong>，输入设备密码</li>
+                </ol>
+            </div>
+            
+            <div class="step">
+                <h3>步骤3：信任证书</h3>
+                <ol>
+                    <li>打开<strong>设置</strong> → <strong>通用</strong> → <strong>关于本机</strong></li>
+                    <li>滚动到底部，点击<strong>证书信任设置</strong></li>
+                    <li>找到 <strong>mkcert</strong>，打开开关</li>
+                    <li>点击<strong>继续</strong>确认信任</li>
+                </ol>
+            </div>
+        </div>
+
+        <div class="platform">
+            <h2>🤖 Android 安装步骤</h2>
+            
+            <div class="step">
+                <h3>步骤2：安装证书</h3>
+                <ol>
+                    <li>下载证书文件</li>
+                    <li>打开<strong>设置</strong> → <strong>安全</strong> → <strong>加密与凭据</strong></li>
+                    <li>点击<strong>安装证书</strong> → <strong>CA证书</strong></li>
+                    <li>选择下载的证书文件</li>
+                    <li>为证书命名（如：mkcert）并确认</li>
+                </ol>
+            </div>
+        </div>
+
+        <div class="success">
+            ✅ <strong>安装完成后：</strong><br>
+            1. 关闭所有浏览器标签页<br>
+            2. 重新访问 <strong>https://192.168.5.27:3002</strong><br>
+            3. 现在应该可以正常使用摄像头了！
+        </div>
+
+        <div class="step">
+            <h3>🔧 其他解决方案</h3>
+            <p><strong>如果无法安装证书，还可以尝试：</strong></p>
+            <ul>
+                <li>在浏览器地址栏点击"不安全" → "网站设置" → "权限" → 允许摄像头</li>
+                <li>使用Chrome浏览器并启用"忽略证书错误"标志</li>
+                <li>使用USB调试连接到电脑，通过chrome://inspect访问</li>
+            </ul>
+        </div>
+
+        <div style="text-align: center; margin-top: 30px;">
+            <a href="https://192.168.5.27:3002" class="btn">🚀 返回视频会议</a>
+        </div>
+    </div>
+</body>
+</html> 

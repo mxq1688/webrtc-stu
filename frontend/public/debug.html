@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>移动端WebSocket调试</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }
+        .log { background: #f0f0f0; padding: 10px; border-radius: 5px; margin: 10px 0; max-height: 300px; overflow-y: scroll; }
+        button { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; background: #007bff; color: white; }
+        .success { color: #28a745; }
+        .error { color: #dc3545; }
+        .info { color: #17a2b8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📱 移动端WebSocket连接调试</h1>
+        
+        <div>
+            <p><strong>当前地址:</strong> <span id="currentUrl"></span></p>
+            <p><strong>协议:</strong> <span id="protocol"></span></p>
+            <p><strong>主机:</strong> <span id="hostname"></span></p>
+        </div>
+        
+        <div>
+            <button onclick="testWebSocket()">🔗 测试WebSocket连接</button>
+            <button onclick="clearLog()">🗑️ 清空日志</button>
+        </div>
+        
+        <div class="log" id="log">
+            <div class="info">📋 点击"测试WebSocket连接"开始诊断...</div>
+        </div>
+    </div>
+
+    <script>
+        // 显示当前页面信息
+        document.getElementById('currentUrl').textContent = window.location.href;
+        document.getElementById('protocol').textContent = window.location.protocol;
+        document.getElementById('hostname').textContent = window.location.hostname;
+        
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = type;
+            logEntry.innerHTML = `[${timestamp}] ${message}`;
+            logDiv.appendChild(logEntry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        function testWebSocket() {
+            clearLog();
+            log('🚀 开始WebSocket连接测试...', 'info');
+            
+            const host = window.location.hostname;
+            const protocol = window.location.protocol;
+            
+            // 确定WebSocket URL
+            let wsUrl;
+            if (protocol === 'https:') {
+                wsUrl = `wss://${host}:8443/ws`;
+                log(`🔒 HTTPS环境，使用WSS: ${wsUrl}`, 'info');
+            } else {
+                wsUrl = `ws://${host}:8080/ws`;
+                log(`🔧 HTTP环境，使用WS: ${wsUrl}`, 'info');
+            }
+            
+            // 添加测试参数
+            const testParams = new URLSearchParams({
+                userId: 'test-user-' + Date.now(),
+                roomId: 'test-room',
+                username: 'TestUser'
+            });
+            
+            const fullWsUrl = `${wsUrl}?${testParams.toString()}`;
+            log(`📡 完整WebSocket URL: ${fullWsUrl}`, 'info');
+            
+            try {
+                log('🔗 正在建立WebSocket连接...', 'info');
+                const ws = new WebSocket(fullWsUrl);
+                
+                ws.onopen = function(event) {
+                    log('✅ WebSocket连接成功建立！', 'success');
+                    log('📤 发送测试消息...', 'info');
+                    
+                    // 发送测试消息
+                    const testMessage = {
+                        type: 'test',
+                        data: 'Hello from mobile!'
+                    };
+                    ws.send(JSON.stringify(testMessage));
+                };
+                
+                ws.onmessage = function(event) {
+                    log(`📥 收到服务器消息: ${event.data}`, 'success');
+                };
+                
+                ws.onclose = function(event) {
+                    log(`❌ WebSocket连接关闭 - 代码: ${event.code}, 原因: ${event.reason || '未知'}`, 'error');
+                    
+                    if (event.code === 1006) {
+                        log('💡 连接异常关闭，可能是网络问题或服务器问题', 'error');
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    log(`🚨 WebSocket连接错误: ${error}`, 'error');
+                    log('🔍 可能的原因:', 'error');
+                    log('  1. 服务器未启动或端口被占用', 'error');
+                    log('  2. 防火墙阻止连接', 'error');
+                    log('  3. SSL证书问题（HTTPS环境）', 'error');
+                    log('  4. 网络连接问题', 'error');
+                };
+                
+                // 5秒后关闭测试连接
+                setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        log('⏰ 测试完成，关闭连接', 'info');
+                        ws.close();
+                    }
+                }, 5000);
+                
+            } catch (error) {
+                log(`💥 创建WebSocket时发生错误: ${error.message}`, 'error');
+            }
+        }
+        
+        // 页面加载完成后自动显示环境信息
+        window.onload = function() {
+            log('📱 移动端WebSocket调试工具已加载', 'info');
+            log(`🌐 当前环境: ${window.location.protocol} @ ${window.location.hostname}`, 'info');
+            log(`📋 用户代理: ${navigator.userAgent}`, 'info');
+        };
+    </script>
+</body>
+</html> 
