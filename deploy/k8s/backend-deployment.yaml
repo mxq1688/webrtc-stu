@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webrtc-backend
+  namespace: xiaozhi
+  labels:
+    app: webrtc-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webrtc-backend
+  template:
+    metadata:
+      labels:
+        app: webrtc-backend
+    spec:
+      imagePullSecrets:
+        - name: harbor-registry
+      containers:
+        - name: backend
+          image: docker.ioam.top/xiaozhi/webrtc-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: webrtc-backend-config
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi

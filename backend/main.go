@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -13,7 +16,7 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // 允许跨域
+		return true
 	},
 }
 
@@ -23,12 +26,14 @@ type Client struct {
 	Conn     *websocket.Conn
 	Send     chan []byte
 	Username string
+	Role     string
 }
 
 type Room struct {
-	ID      string
-	Clients map[string]*Client
-	mu      sync.RWMutex
+	ID           string
+	Clients      map[string]*Client
+	ScreenSharer string
+	mu           sync.RWMutex
 }
 
 type Hub struct {
@@ -75,14 +80,13 @@ func (h *Hub) run() {
 			room.mu.Unlock()
 			h.mu.Unlock()
 
-			// 通知房间内其他用户有新用户加入
 			h.broadcastToRoom(client.RoomID, &Message{
 				Type:     "user-joined",
 				UserID:   client.ID,
 				Username: client.Username,
+				Data:     map[string]string{"role": client.Role},
 			}, client.ID)
 
-			// 发送当前房间用户列表给新用户
 			userList := h.getUserList(client.RoomID)
 			userListMsg, _ := json.Marshal(&Message{
 				Type: "user-list",
@@ -94,6 +98,18 @@ func (h *Hub) run() {
 				close(client.Send)
 			}
 
+			room.mu.RLock()
+			screenSharer := room.ScreenSharer
+			room.mu.RUnlock()
+			if screenSharer != "" {
+				ssMsg, _ := json.Marshal(&Message{Type: "screen-share-start", Data: map[string]string{"userId": screenSharer}})
+				select {
+				case client.Send <- ssMsg:
+				default:
+					close(client.Send)
+				}
+			}
+
 		case client := <-h.Unregister:
 			h.mu.Lock()
 			if room, exists := h.Rooms[client.RoomID]; exists {
@@ -102,11 +118,17 @@ func (h *Hub) run() {
 					delete(room.Clients, client.ID)
 					close(client.Send)
 
-					// 如果房间为空，删除房间
+					if room.ScreenSharer == client.ID {
+						room.ScreenSharer = ""
+						h.broadcastToRoom(client.RoomID, &Message{
+							Type: "screen-share-stop",
+							Data: map[string]string{"userId": client.ID},
+						}, "")
+					}
+
 					if len(room.Clients) == 0 {
 						delete(h.Rooms, client.RoomID)
 					} else {
-						// 通知其他用户该用户离开
 						h.broadcastToRoom(client.RoomID, &Message{
 							Type:   "user-left",
 							UserID: client.ID,
@@ -138,7 +160,6 @@ func (h *Hub) broadcastToRoom(roomID string, message *Message, excludeUserID str
 	}
 
 	room.mu.RLock()
-	// 如果指定了目标用户，只发送给目标用户
 	if message.TargetUserID != "" {
 		if client, exists := room.Clients[message.TargetUserID]; exists {
 			select {
@@ -149,7 +170,6 @@ func (h *Hub) broadcastToRoom(roomID string, message *Message, excludeUserID str
 			}
 		}
 	} else {
-		// 广播给除了发送者之外的所有用户
 		for clientID, client := range room.Clients {
 			if clientID != excludeUserID {
 				select {
@@ -179,14 +199,82 @@ func (h *Hub) getUserList(roomID string) []map[string]string {
 		users = append(users, map[string]string{
 			"id":       client.ID,
 			"username": client.Username,
+			"role":     client.Role,
 		})
 	}
 	room.mu.RUnlock()
 	return users
 }
 
+func (h *Hub) handleRoleChange(client *Client, message *Message) {
+	var newRole string
+	switch d := message.Data.(type) {
+	case string:
+		newRole = d
+	case map[string]interface{}:
+		if v, ok := d["role"].(string); ok {
+			newRole = v
+		}
+	}
+	if newRole != "anchor" && newRole != "audience" {
+		return
+	}
+	h.mu.RLock()
+	room, exists := h.Rooms[client.RoomID]
+	h.mu.RUnlock()
+	if !exists {
+		return
+	}
+	room.mu.Lock()
+	client.Role = newRole
+	room.mu.Unlock()
+	h.broadcastToRoom(client.RoomID, &Message{
+		Type:   "role-changed",
+		UserID: client.ID,
+		Data:   map[string]string{"role": newRole},
+	}, "")
+}
+
+func (h *Hub) handleScreenShareStart(client *Client, message *Message) {
+	h.mu.RLock()
+	room, exists := h.Rooms[client.RoomID]
+	h.mu.RUnlock()
+	if !exists {
+		return
+	}
+	room.mu.Lock()
+	room.ScreenSharer = client.ID
+	room.mu.Unlock()
+	h.broadcastToRoom(client.RoomID, &Message{
+		Type:   "screen-share-start",
+		UserID: client.ID,
+		Data:   map[string]string{"userId": client.ID},
+	}, client.ID)
+}
+
+func (h *Hub) handleScreenShareStop(client *Client, message *Message) {
+	h.mu.RLock()
+	room, exists := h.Rooms[client.RoomID]
+	h.mu.RUnlock()
+	if !exists {
+		return
+	}
+	room.mu.Lock()
+	if room.ScreenSharer == client.ID {
+		room.ScreenSharer = ""
+	}
+	room.mu.Unlock()
+	h.broadcastToRoom(client.RoomID, &Message{
+		Type:   "screen-share-stop",
+		UserID: client.ID,
+		Data:   map[string]string{"userId": client.ID},
+	}, "")
+}
+
 func (c *Client) writePump() {
 	defer c.Conn.Close()
+	ticker := time.NewTicker(54 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case message, ok := <-c.Send:
@@ -195,6 +283,10 @@ func (c *Client) writePump() {
 				return
 			}
 			c.Conn.WriteMessage(websocket.TextMessage, message)
+		case <-ticker.C:
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -204,6 +296,12 @@ func (c *Client) readPump(hub *Hub) {
 		hub.Unregister <- c
 		c.Conn.Close()
 	}()
+	c.Conn.SetReadLimit(65536)
+	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.Conn.SetPongHandler(func(string) error {
+		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
 
 	for {
 		_, messageBytes, err := c.Conn.ReadMessage()
@@ -222,32 +320,39 @@ func (c *Client) readPump(hub *Hub) {
 		switch message.Type {
 		case "offer", "answer", "ice-candidate":
 			hub.Broadcast <- &message
+		case "change-role":
+			hub.handleRoleChange(c, &message)
+		case "screen-share-start":
+			hub.handleScreenShareStart(c, &message)
+		case "screen-share-stop":
+			hub.handleScreenShareStop(c, &message)
+		case "chat":
+			hub.Broadcast <- &message
 		}
 	}
 }
 
 func serveWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
-	log.Printf("🔗 收到WebSocket连接请求: %s", r.URL.String())
+	log.Printf("WebSocket connect: %s", r.URL.String())
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("❌ WebSocket升级失败: %v", err)
+		log.Printf("WebSocket upgrade fail: %v", err)
 		return
 	}
 
 	userID := r.URL.Query().Get("userId")
 	roomID := r.URL.Query().Get("roomId")
 	username := r.URL.Query().Get("username")
-
-	log.Printf("🔗 连接参数: userID=%s, roomID=%s, username=%s", userID, roomID, username)
+	role := r.URL.Query().Get("role")
+	if role == "" {
+		role = "anchor"
+	}
 
 	if userID == "" || roomID == "" || username == "" {
-		log.Printf("❌ 参数缺失，关闭连接: userID=%s, roomID=%s, username=%s", userID, roomID, username)
 		conn.Close()
 		return
 	}
-
-	log.Printf("✅ 创建客户端: userID=%s, roomID=%s, username=%s", userID, roomID, username)
 
 	client := &Client{
 		ID:       userID,
@@ -255,6 +360,7 @@ func serveWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		Conn:     conn,
 		Send:     make(chan []byte, 256),
 		Username: username,
+		Role:     role,
 	}
 
 	hub.Register <- client
@@ -263,43 +369,88 @@ func serveWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	go client.readPump(hub)
 }
 
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func corsOrigins() []string {
+	if raw := os.Getenv("ALLOWED_ORIGINS"); raw != "" {
+		parts := strings.Split(raw, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return []string{
+		"https://localhost:3000",
+		"http://localhost:3000",
+		"https://192.168.5.27:3000",
+	}
+}
+
 func main() {
 	hub := newHub()
 	go hub.run()
 
+	ueHub := newUeHub()
+	go ueHub.run()
+
 	router := mux.NewRouter()
 
-	// 配置CORS
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"https://localhost:3000", "https://192.168.5.27:3000"},
+		AllowedOrigins:   corsOrigins(),
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
 		AllowedHeaders:   []string{"*"},
 		AllowCredentials: true,
 	})
 
-	// WebSocket路由
 	router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWS(hub, w, r)
 	})
 
-	// 健康检查路由
+	router.HandleFunc("/ws/ue", func(w http.ResponseWriter, r *http.Request) {
+		serveUeWS(ueHub, w, r)
+	})
+
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
 
-	handler := c.Handler(router)
+	router.HandleFunc("/health/ue", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 
-	// 同时启动HTTP和HTTPS服务器
+	handler := c.Handler(router)
+	httpPort := envOr("HTTP_PORT", "8080")
+	tlsEnabled := envOr("TLS_ENABLED", "true") == "true"
+	tlsCert := envOr("TLS_CERT", "localhost+1.pem")
+	tlsKey := envOr("TLS_KEY", "localhost+1-key.pem")
+
+	addr := ":" + httpPort
+	if !tlsEnabled {
+		log.Printf("HTTP server on %s (TLS disabled, use Ingress TLS)", addr)
+		log.Fatal(http.ListenAndServe(addr, handler))
+	}
+
 	go func() {
-		log.Printf("🚀 HTTP服务器启动在 http://localhost:8080")
-		if err := http.ListenAndServe(":8080", handler); err != nil {
-			log.Printf("HTTP服务器错误: %v", err)
+		log.Printf("HTTP server on %s", addr)
+		if err := http.ListenAndServe(addr, handler); err != nil {
+			log.Printf("HTTP error: %v", err)
 		}
 	}()
 
-	log.Printf("🔒 HTTPS服务器启动在 https://localhost:8443")
-	if err := http.ListenAndServeTLS(":8443", "localhost+1.pem", "localhost+1-key.pem", handler); err != nil {
-		log.Fatal("HTTPS服务器错误:", err)
+	log.Printf("HTTPS server on :8443")
+	if err := http.ListenAndServeTLS(":8443", tlsCert, tlsKey, handler); err != nil {
+		log.Fatal("HTTPS error:", err)
 	}
 }

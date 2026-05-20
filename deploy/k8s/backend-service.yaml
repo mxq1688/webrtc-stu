@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: webrtc-backend
+  namespace: xiaozhi
+  labels:
+    app: webrtc-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: webrtc-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

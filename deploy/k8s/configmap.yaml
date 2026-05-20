@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webrtc-backend-config
+  namespace: xiaozhi
+data:
+  HTTP_PORT: "8080"
+  TLS_ENABLED: "false"
+  ALLOWED_ORIGINS: "http://43.153.40.19:30810,https://43.153.40.19:30810,http://localhost:30810"

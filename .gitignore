@@ -29,6 +29,7 @@ build/Release
 # Environment variables
 .env
 .env.local
+deploy/.env
 .env.development.local
 .env.test.local
 .env.production.local
