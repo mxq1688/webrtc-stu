@@ -119,7 +119,8 @@ code { font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', mon
   display: flex; flex-direction: column; gap: 10px;
   margin: 0; height: 100%; overflow-y: auto;
 }
-.trtc-filmstrip .video-wrapper { aspect-ratio: 16/9; max-height: 180px; }
+.trtc-filmstrip .video-wrapper { aspect-ratio: 16/9; max-height: 180px; min-height: 100px; }
+.trtc-filmstrip .video-wrapper.local-video { border-color: rgba(102, 126, 234, 0.8); }
 
 /* Embed */
 .embed-section { flex: 1; display: flex; flex-direction: column; gap: 12px; }

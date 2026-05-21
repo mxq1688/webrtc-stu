@@ -56,9 +56,9 @@ type Message struct {
 func newHub() *Hub {
 	return &Hub{
 		Rooms:      make(map[string]*Room),
-		Register:   make(chan *Client),
-		Unregister: make(chan *Client),
-		Broadcast:  make(chan *Message),
+		Register:   make(chan *Client, 64),
+		Unregister: make(chan *Client, 64),
+		Broadcast:  make(chan *Message, 256),
 	}
 }
 
@@ -66,82 +66,115 @@ func (h *Hub) run() {
 	for {
 		select {
 		case client := <-h.Register:
-			h.mu.Lock()
-			room, exists := h.Rooms[client.RoomID]
-			if !exists {
-				room = &Room{
-					ID:      client.RoomID,
-					Clients: make(map[string]*Client),
-				}
-				h.Rooms[client.RoomID] = room
-			}
-			room.mu.Lock()
-			room.Clients[client.ID] = client
-			room.mu.Unlock()
-			h.mu.Unlock()
-
-			h.broadcastToRoom(client.RoomID, &Message{
-				Type:     "user-joined",
-				UserID:   client.ID,
-				Username: client.Username,
-				Data:     map[string]string{"role": client.Role},
-			}, client.ID)
-
-			userList := h.getUserList(client.RoomID)
-			userListMsg, _ := json.Marshal(&Message{
-				Type: "user-list",
-				Data: userList,
-			})
-			select {
-			case client.Send <- userListMsg:
-			default:
-				close(client.Send)
-			}
-
-			room.mu.RLock()
-			screenSharer := room.ScreenSharer
-			room.mu.RUnlock()
-			if screenSharer != "" {
-				ssMsg, _ := json.Marshal(&Message{Type: "screen-share-start", Data: map[string]string{"userId": screenSharer}})
-				select {
-				case client.Send <- ssMsg:
-				default:
-					close(client.Send)
-				}
-			}
-
+			h.handleRegister(client)
 		case client := <-h.Unregister:
-			h.mu.Lock()
-			if room, exists := h.Rooms[client.RoomID]; exists {
-				room.mu.Lock()
-				if _, exists := room.Clients[client.ID]; exists {
-					delete(room.Clients, client.ID)
-					close(client.Send)
-
-					if room.ScreenSharer == client.ID {
-						room.ScreenSharer = ""
-						h.broadcastToRoom(client.RoomID, &Message{
-							Type: "screen-share-stop",
-							Data: map[string]string{"userId": client.ID},
-						}, "")
-					}
-
-					if len(room.Clients) == 0 {
-						delete(h.Rooms, client.RoomID)
-					} else {
-						h.broadcastToRoom(client.RoomID, &Message{
-							Type:   "user-left",
-							UserID: client.ID,
-						}, "")
-					}
-				}
-				room.mu.Unlock()
-			}
-			h.mu.Unlock()
-
+			h.handleUnregister(client)
 		case message := <-h.Broadcast:
 			h.broadcastToRoom(message.RoomID, message, message.UserID)
 		}
+	}
+}
+
+func (h *Hub) handleRegister(client *Client) {
+	h.mu.Lock()
+	room, exists := h.Rooms[client.RoomID]
+	if !exists {
+		room = &Room{
+			ID:      client.RoomID,
+			Clients: make(map[string]*Client),
+		}
+		h.Rooms[client.RoomID] = room
+	}
+	room.mu.Lock()
+	replacedStale := false
+	if old, exists := room.Clients[client.ID]; exists && old != client {
+		log.Printf("replace stale client room=%s id=%s", client.RoomID, client.ID)
+		replacedStale = true
+		close(old.Send)
+		go old.Conn.Close()
+	}
+	room.Clients[client.ID] = client
+	total := len(room.Clients)
+	roomID := client.RoomID
+	clientID := client.ID
+	room.mu.Unlock()
+	h.mu.Unlock()
+
+	if replacedStale {
+		h.broadcastToRoom(roomID, &Message{
+			Type:   "user-left",
+			UserID: clientID,
+		}, "")
+	}
+
+	log.Printf("user joined room=%s id=%s name=%s (total=%d)", roomID, clientID, client.Username, total)
+	h.broadcastToRoom(roomID, &Message{
+		Type:     "user-joined",
+		UserID:   clientID,
+		Username: client.Username,
+		Data:     map[string]string{"role": client.Role},
+	}, clientID)
+
+	userList := h.getUserList(roomID)
+	userListMsg, _ := json.Marshal(&Message{Type: "user-list", Data: userList})
+	select {
+	case client.Send <- userListMsg:
+	default:
+		close(client.Send)
+	}
+
+	h.mu.RLock()
+	room, _ = h.Rooms[roomID]
+	h.mu.RUnlock()
+	if room != nil {
+		room.mu.RLock()
+		screenSharer := room.ScreenSharer
+		room.mu.RUnlock()
+		if screenSharer != "" {
+			ssMsg, _ := json.Marshal(&Message{Type: "screen-share-start", Data: map[string]string{"userId": screenSharer}})
+			select {
+			case client.Send <- ssMsg:
+			default:
+				close(client.Send)
+			}
+		}
+	}
+}
+
+func (h *Hub) handleUnregister(client *Client) {
+	h.mu.Lock()
+	room, exists := h.Rooms[client.RoomID]
+	if !exists {
+		h.mu.Unlock()
+		return
+	}
+	room.mu.Lock()
+	roomID := client.RoomID
+	clientID := client.ID
+	shouldBroadcastLeave := false
+	remain := 0
+	if existing, ok := room.Clients[clientID]; ok && existing == client {
+		delete(room.Clients, clientID)
+		close(client.Send)
+		if room.ScreenSharer == clientID {
+			room.ScreenSharer = ""
+		}
+		remain = len(room.Clients)
+		if remain == 0 {
+			delete(h.Rooms, roomID)
+		} else {
+			shouldBroadcastLeave = true
+		}
+	}
+	room.mu.Unlock()
+	h.mu.Unlock()
+
+	if shouldBroadcastLeave {
+		log.Printf("user left room=%s id=%s (remain=%d)", roomID, clientID, remain)
+		h.broadcastToRoom(roomID, &Message{
+			Type:   "user-left",
+			UserID: clientID,
+		}, "")
 	}
 }
 
@@ -168,6 +201,8 @@ func (h *Hub) broadcastToRoom(roomID string, message *Message, excludeUserID str
 				close(client.Send)
 				delete(room.Clients, message.TargetUserID)
 			}
+		} else {
+			log.Printf("signal %s target %s not in room %s (clients=%d)", message.Type, message.TargetUserID, roomID, len(room.Clients))
 		}
 	} else {
 		for clientID, client := range room.Clients {
@@ -319,7 +354,9 @@ func (c *Client) readPump(hub *Hub) {
 
 		switch message.Type {
 		case "offer", "answer", "ice-candidate":
-			hub.Broadcast <- &message
+			log.Printf("signal %s room=%s from=%s to=%s", message.Type, c.RoomID, c.ID, message.TargetUserID)
+			msg := message
+			go hub.broadcastToRoom(c.RoomID, &msg, msg.UserID)
 		case "change-role":
 			hub.handleRoleChange(c, &message)
 		case "screen-share-start":
@@ -392,7 +429,10 @@ func corsOrigins() []string {
 	return []string{
 		"https://localhost:3000",
 		"http://localhost:3000",
+		"https://127.0.0.1:3000",
 		"https://192.168.5.27:3000",
+		"https://192.168.5.46:3000",
+		"http://192.168.5.46:3000",
 	}
 }
 

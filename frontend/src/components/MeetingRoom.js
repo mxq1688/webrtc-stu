@@ -18,7 +18,10 @@ function MeetingRoom() {
 
   const username = searchParams.get('username') || '';
   const initialRole = searchParams.get('role') || 'anchor';
-  const userId = useRef(uuidv4());
+  const uidStorageKey = `webrtc-uid-${roomId}-${username}`;
+  const userId = useRef(
+    (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(uidStorageKey)) || uuidv4()
+  );
   const [localStream, setLocalStream] = useState(null);
   const [screenStream, setScreenStream] = useState(null);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -29,6 +32,7 @@ function MeetingRoom() {
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState('');
   const [pinnedUserId, setPinnedUserId] = useState(null);
+  const [rtcDebug, setRtcDebug] = useState('');
 
   const localVideoRef = useRef();
   const localStreamRef = useRef(null);
@@ -36,6 +40,7 @@ function MeetingRoom() {
   const peerConnectionsRef = useRef(new Map());
   const iceQueuesRef = useRef(new Map());
   const remoteVideoRefs = useRef(new Map());
+  const remoteStreamCacheRef = useRef(new Map());
 
   const servers = {
     iceServers: [
@@ -62,26 +67,15 @@ function MeetingRoom() {
   const chat = useChat(sendMessage, userId.current, username);
   const recording = useRecording(localStream, remoteStreams);
 
-  useEffect(() => {
-    if (!username) { navigate('/'); return; }
-    let cancelled = false;
-    (async () => {
-      await initializeMedia();
-      if (!cancelled) connectWebSocket();
-    })();
-    return () => {
-      cancelled = true;
-      cleanup();
-    };
-  }, [roomId, username]);
+  const wsReconnectTimerRef = useRef(null);
+  const intentionalCloseRef = useRef(false);
+
+  /** userId 较小的一方负责发 offer，避免双方都不发或同时发 */
+  const isOfferer = useCallback((remoteId) => userId.current.localeCompare(remoteId) < 0, []);
 
   useEffect(() => {
-    localStreamRef.current = localStream;
-    if (!localStream) return;
-    for (const [, pc] of peerConnectionsRef.current.entries()) {
-      attachLocalTracks(pc);
-    }
-  }, [localStream, isScreenSharing, screenStream]);
+    sessionStorage.setItem(uidStorageKey, userId.current);
+  }, [uidStorageKey]);
 
   const attachLocalTracks = (pc) => {
     const streamToSend = isScreenSharing && screenStream ? screenStream : localStreamRef.current;
@@ -96,6 +90,51 @@ function MeetingRoom() {
       }
     });
   };
+
+  useEffect(() => {
+    if (!username) { navigate('/'); return; }
+    let cancelled = false;
+    intentionalCloseRef.current = false;
+
+    const onPageHide = () => {
+      intentionalCloseRef.current = true;
+      if (websocketRef.current?.readyState === WebSocket.OPEN) {
+        websocketRef.current.close(1000, 'pagehide');
+      }
+    };
+    window.addEventListener('pagehide', onPageHide);
+
+    (async () => {
+      await initializeMedia();
+      if (!cancelled) connectWebSocket();
+    })();
+    return () => {
+      cancelled = true;
+      window.removeEventListener('pagehide', onPageHide);
+      intentionalCloseRef.current = true;
+      if (wsReconnectTimerRef.current) clearTimeout(wsReconnectTimerRef.current);
+      cleanup();
+    };
+  }, [roomId, username]);
+
+  useEffect(() => {
+    localStreamRef.current = localStream;
+    if (!localStream) return;
+    for (const [, pc] of peerConnectionsRef.current.entries()) {
+      attachLocalTracks(pc);
+    }
+  }, [localStream, isScreenSharing, screenStream]);
+
+  const bindLocalVideo = useCallback((el) => {
+    localVideoRef.current = el;
+    if (!el) return;
+    const src = isScreenSharing && screenStream ? screenStream : localStream;
+    if (src && el.srcObject !== src) {
+      el.srcObject = src;
+      el.muted = true;
+      el.play().catch((e) => console.warn('[WebRTC] local play failed:', e));
+    }
+  }, [localStream, screenStream, isScreenSharing]);
 
   const flushIceQueue = async (remoteUserId) => {
     const pc = peerConnectionsRef.current.get(remoteUserId);
@@ -133,6 +172,7 @@ function MeetingRoom() {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      localStreamRef.current = stream;
       setLocalStream(stream);
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
       setError('');
@@ -156,6 +196,7 @@ function MeetingRoom() {
   const tryFallbackConstraints = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localStreamRef.current = stream;
       setLocalStream(stream);
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
       setError('');
@@ -165,19 +206,51 @@ function MeetingRoom() {
   };
 
   const connectWebSocket = () => {
-    const wsUrl = `${getMeetingWebSocketURL()}?userId=${userId.current}&roomId=${roomId}&username=${encodeURIComponent(username)}&role=${encodeURIComponent(initialRole)}`;
-    websocketRef.current = new WebSocket(wsUrl);
+    if (wsReconnectTimerRef.current) {
+      clearTimeout(wsReconnectTimerRef.current);
+      wsReconnectTimerRef.current = null;
+    }
+    if (websocketRef.current) {
+      intentionalCloseRef.current = true;
+      websocketRef.current.close(1000, 'reconnect');
+      websocketRef.current = null;
+    }
+    intentionalCloseRef.current = false;
 
-    websocketRef.current.onopen = () => { setIsConnected(true); setError(''); };
-    websocketRef.current.onmessage = async (event) => {
+    const wsUrl = `${getMeetingWebSocketURL()}?userId=${userId.current}&roomId=${roomId}&username=${encodeURIComponent(username)}&role=${encodeURIComponent(initialRole)}`;
+    console.log('[WS] connecting:', wsUrl);
+    const ws = new WebSocket(wsUrl);
+    websocketRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('[WS] connected (resync P2P):', wsUrl);
+      // 仅清 P2P，users 等 user-list / user-joined 消息回填
+      Array.from(peerConnectionsRef.current.keys()).forEach((id) => closePeerConnection(id));
+      setRemoteStreams(new Map());
+      setRtcDebug('');
+      setIsConnected(true);
+      setError('');
+    };
+    ws.onmessage = async (event) => {
       try { await handleWebSocketMessage(JSON.parse(event.data)); } catch (e) { console.error('Message parse error:', e); }
     };
-    websocketRef.current.onclose = (event) => {
+    ws.onclose = (event) => {
       setIsConnected(false);
-      if (event.code !== 1000) setError(`连接关闭 (${event.code})`);
+      if (intentionalCloseRef.current || event.code === 1000) return;
+      const hint = event.code === 1006
+        ? '信令连接异常断开，请确认后端已启动且使用 https://localhost:3000 或 https://本机IP:3000'
+        : `连接关闭 (${event.code})`;
+      setError(hint);
+      wsReconnectTimerRef.current = setTimeout(() => {
+        if (!intentionalCloseRef.current) connectWebSocket();
+      }, 3000);
     };
-    websocketRef.current.onerror = () => {
-      setError(window.location.protocol === 'https:' ? '证书连接失败，请刷新重试。' : '服务器连接失败');
+    ws.onerror = () => {
+      setError(
+        window.location.protocol === 'https:'
+          ? '信令连接失败：请信任本地证书，或访问 https://本机IP:3000/debug.html 测试'
+          : '信令连接失败：请用 https://localhost:3000 访问（HTTP 无法连 :8443）'
+      );
     };
   };
 
@@ -186,23 +259,27 @@ function MeetingRoom() {
     chat.handleIncoming(message);
 
     switch (message.type) {
-      case 'user-list':
-        setUsers((message.data || []).filter((u) => u.id !== userId.current));
+      case 'user-list': {
+        const others = (message.data || []).filter((u) => u.id !== userId.current);
+        setUsers(others);
         roleManager.handleRoleMessage(message);
-        for (const user of message.data || []) {
-          if (user.id !== userId.current && !peerConnectionsRef.current.has(user.id)) {
-            await createPeerConnection(user.id);
-          }
+        console.log('[WS] user-list', others.map((u) => u.username).join(','));
+        for (const user of others) {
+          await connectPeer(user.id);
+          ensureNegotiation(user.id);
         }
         break;
+      }
 
       case 'user-joined':
         if (message.userId !== userId.current) {
-          setUsers(prev => [...prev, { id: message.userId, username: message.username, role: message.data?.role || 'anchor' }]);
-          if (!peerConnectionsRef.current.has(message.userId)) {
-            await createPeerConnection(message.userId);
-            await createOffer(message.userId);
-          }
+          setUsers((prev) => {
+            if (prev.some((u) => u.id === message.userId)) return prev;
+            return [...prev, { id: message.userId, username: message.username, role: message.data?.role || 'anchor' }];
+          });
+          console.log('[WS] user-joined', message.username, message.userId);
+          await connectPeer(message.userId);
+          ensureNegotiation(message.userId);
         }
         break;
 
@@ -232,6 +309,32 @@ function MeetingRoom() {
     }
   };
 
+  const resetP2PState = useCallback(() => {
+    Array.from(peerConnectionsRef.current.keys()).forEach((id) => closePeerConnection(id));
+    setRemoteStreams(new Map());
+    setUsers([]);
+    setRtcDebug('');
+  }, []);
+
+  const connectPeer = async (remoteUserId) => {
+    closePeerConnection(remoteUserId);
+    await createPeerConnection(remoteUserId);
+    if (isOfferer(remoteUserId) && localStreamRef.current) {
+      await sendOffer(remoteUserId);
+    }
+  };
+
+  const ensureNegotiation = useCallback((remoteUserId) => {
+    setTimeout(async () => {
+      const pc = peerConnectionsRef.current.get(remoteUserId);
+      if (!pc || pc.remoteDescription || !localStreamRef.current) return;
+      if (isOfferer(remoteUserId)) {
+        console.log('[WebRTC] retry offer ->', remoteUserId);
+        await sendOffer(remoteUserId);
+      }
+    }, 800);
+  }, [isOfferer]);
+
   const createPeerConnection = async (remoteUserId) => {
     const pc = new RTCPeerConnection(servers);
     peerConnectionsRef.current.set(remoteUserId, pc);
@@ -239,54 +342,98 @@ function MeetingRoom() {
     attachLocalTracks(pc);
 
     pc.ontrack = (event) => {
-      const [rs] = event.streams;
-      if (!rs) return;
-      rs.getTracks().forEach(track => {
-        track.onended = () => console.log(`Track ended [${track.kind}]`);
+      console.log('[WebRTC] ontrack', remoteUserId, event.track?.kind, 'streams=', event.streams?.length ?? 0);
+      let stream = event.streams && event.streams[0];
+      if (!stream) {
+        let cached = remoteStreamCacheRef.current.get(remoteUserId);
+        if (!cached) {
+          cached = new MediaStream();
+          remoteStreamCacheRef.current.set(remoteUserId, cached);
+        }
+        if (event.track && !cached.getTracks().includes(event.track)) {
+          cached.addTrack(event.track);
+        }
+        stream = cached;
+      }
+      event.track.onended = () => console.log(`[WebRTC] track ended [${event.track.kind}] ${remoteUserId}`);
+      setRemoteStreams((prev) => {
+        const m = new Map(prev);
+        m.set(remoteUserId, stream);
+        return m;
       });
-      setRemoteStreams(prev => { const m = new Map(prev); m.set(remoteUserId, rs); return m; });
     };
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        sendMessage({ type: 'ice-candidate', data: event.candidate, targetUserId: remoteUserId });
+        sendMessage({
+          type: 'ice-candidate',
+          data: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
+          targetUserId: remoteUserId,
+        });
       }
     };
 
+    const updateDebug = () => {
+      const parts = [];
+      for (const [id, p] of peerConnectionsRef.current.entries()) {
+        parts.push(`${id.slice(0, 6)}:ice=${p.iceConnectionState},conn=${p.connectionState}`);
+      }
+      setRtcDebug(parts.join(' | ') || '无 P2P 连接');
+    };
+
     pc.oniceconnectionstatechange = () => {
+      console.log(`[WebRTC] ICE ${remoteUserId}:`, pc.iceConnectionState);
+      updateDebug();
       if (pc.iceConnectionState === 'failed') pc.restartIce();
     };
 
     pc.onconnectionstatechange = () => {
+      console.log(`[WebRTC] conn ${remoteUserId}:`, pc.connectionState);
+      updateDebug();
+      if (pc.connectionState === 'connected') {
+        console.log(`[WebRTC] P2P connected with ${remoteUserId}`);
+      }
       if (pc.connectionState === 'failed') {
-        closePeerConnection(remoteUserId);
-        setTimeout(() => createPeerConnection(remoteUserId), 1000);
+        console.warn('[WebRTC] conn failed, retry', remoteUserId);
+        setTimeout(() => connectPeer(remoteUserId), 1000);
       }
     };
 
     return pc;
   };
 
-  const createOffer = async (remoteUserId) => {
+  const sendOffer = async (remoteUserId) => {
     const pc = peerConnectionsRef.current.get(remoteUserId);
-    if (!pc) return;
+    if (!pc || !localStreamRef.current) return;
+    attachLocalTracks(pc);
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       sendMessage({ type: 'offer', data: offer, targetUserId: remoteUserId });
-    } catch (e) { console.error('Create offer failed:', e); }
+      console.log('[WebRTC] offer ->', remoteUserId);
+    } catch (e) {
+      console.error('Send offer failed:', remoteUserId, e);
+    }
   };
 
   const handleOffer = async (message) => {
     const { userId: rId, data: offer } = message;
+    if (!rId || !offer) return;
     let pc = peerConnectionsRef.current.get(rId);
     if (!pc) pc = await createPeerConnection(rId);
+    attachLocalTracks(pc);
+    const offerDesc = new RTCSessionDescription(offer);
     try {
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      if (pc.signalingState === 'have-local-offer' && isOfferer(rId)) {
+        console.log('[WebRTC] ignore glare offer from', rId);
+        return;
+      }
+      await pc.setRemoteDescription(offerDesc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       sendMessage({ type: 'answer', data: answer, targetUserId: rId });
       await flushIceQueue(rId);
+      console.log('[WebRTC] answer ->', rId);
     } catch (e) {
       console.error('Handle offer failed:', e);
       closePeerConnection(rId);
@@ -301,8 +448,8 @@ function MeetingRoom() {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
       await flushIceQueue(rId);
     } catch (e) {
-      closePeerConnection(rId);
-      setTimeout(() => createPeerConnection(rId), 1000);
+      console.error('Handle answer failed:', e);
+      setTimeout(() => connectPeer(rId), 1000);
     }
   };
 
@@ -324,6 +471,7 @@ function MeetingRoom() {
   };
 
   const closePeerConnection = (rId) => {
+    remoteStreamCacheRef.current.delete(rId);
     const pc = peerConnectionsRef.current.get(rId);
     if (pc) { pc.close(); peerConnectionsRef.current.delete(rId); }
     iceQueuesRef.current.delete(rId);
@@ -391,11 +539,16 @@ function MeetingRoom() {
   const leaveRoom = () => { cleanup(); navigate('/'); };
 
   const cleanup = () => {
+    intentionalCloseRef.current = true;
+    if (wsReconnectTimerRef.current) clearTimeout(wsReconnectTimerRef.current);
     if (localStream) localStream.getTracks().forEach(t => t.stop());
     if (screenStream) screenStream.getTracks().forEach(t => t.stop());
     peerConnectionsRef.current.forEach(pc => pc.close());
     peerConnectionsRef.current.clear();
-    if (websocketRef.current) websocketRef.current.close();
+    if (websocketRef.current) {
+      websocketRef.current.close(1000, 'leave');
+      websocketRef.current = null;
+    }
   };
 
   const copyRoomId = () => {
@@ -442,8 +595,8 @@ function MeetingRoom() {
   };
 
   const renderLocalVideo = () => (
-    <div className="video-wrapper" onClick={() => {}}>
-      <video ref={localVideoRef} className="video" autoPlay muted playsInline />
+    <div className="video-wrapper local-video" onClick={() => {}}>
+      <video ref={bindLocalVideo} className="video" autoPlay muted playsInline />
       {!localStream && (
         <div className="video-placeholder">
           {window.isSecureContext ? '未开启摄像头' : 'HTTP 下无法开启本地摄像头'}
@@ -465,8 +618,14 @@ function MeetingRoom() {
       <div key={rid} className={`video-wrapper ${isSpeaking ? 'speaking' : ''}`} onClick={() => setPinnedUserId(rid)}>
         <video
           className="video"
-          autoPlay playsInline
-          ref={el => { if (el) el.srcObject = stream; }}
+          autoPlay
+          playsInline
+          ref={(el) => {
+            if (el && el.srcObject !== stream) {
+              el.srcObject = stream;
+              el.play().catch((e) => console.warn('[WebRTC] remote play failed:', e));
+            }
+          }}
         />
         <div className="video-overlay">
           {user?.username || 'Unknown'}
@@ -557,6 +716,11 @@ function MeetingRoom() {
         {isConnected && users.length === 0 && (
           <span style={{ marginLeft: 8, color: '#74c0fc', fontSize: 13 }}>
             · 等待其他人加入
+          </span>
+        )}
+        {isConnected && users.length > 0 && (
+          <span style={{ marginLeft: 8, color: '#adb5bd', fontSize: 12 }}>
+            · 远端 {remoteStreams.size}/{users.length} · {rtcDebug}
           </span>
         )}
       </div>

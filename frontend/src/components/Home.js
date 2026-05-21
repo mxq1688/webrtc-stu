@@ -17,14 +17,14 @@ function Home() {
 
   const handleCreateRoom = () => {
     if (!username.trim()) { alert('请输入用户名'); return; }
-    const newRoomId = uuidv4().substring(0, 8);
-    navigate(`/room/${newRoomId}?${buildRoomQuery(username, role)}`);
+    const id = roomId.trim() || uuidv4().substring(0, 8);
+    navigate(`/room/${encodeURIComponent(id)}?${buildRoomQuery(username, role)}`);
   };
 
   const handleJoinRoom = () => {
     if (!username.trim()) { alert('请输入用户名'); return; }
     if (!roomId.trim()) { alert('请输入房间ID'); return; }
-    navigate(`/room/${roomId}?${buildRoomQuery(username, role)}`);
+    navigate(`/room/${encodeURIComponent(roomId.trim())}?${buildRoomQuery(username, role)}`);
   };
 
   return (
@@ -53,7 +53,7 @@ function Home() {
 
           <input
             type="text" className="input"
-            placeholder="请输入房间ID (可选)"
+            placeholder="房间ID（创建时填写则使用自定义，留空则随机生成）"
             value={roomId}
             onChange={e => setRoomId(e.target.value)}
             onKeyPress={e => { if (e.key === 'Enter' && roomId.trim()) handleJoinRoom(); }}
@@ -68,7 +68,9 @@ function Home() {
           </div>
 
           <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
-            <button className="btn" onClick={handleCreateRoom} style={{ flex: 1 }}>创建新房间</button>
+            <button className="btn" onClick={handleCreateRoom} style={{ flex: 1 }}>
+              {roomId.trim() ? '创建房间' : '创建新房间'}
+            </button>
             <button className="btn" onClick={handleJoinRoom} disabled={!roomId.trim()} style={{ flex: 1 }}>加入房间</button>
           </div>
         </div>
@@ -94,8 +96,8 @@ function Home() {
               <h4 style={{ color: '#1976d2', marginTop: 0 }}>📱 移动端访问说明</h4>
               <p style={{ color: '#666', margin: '10px 0' }}>移动端需要信任SSL证书才能正常使用：</p>
               <ol style={{ color: '#666', paddingLeft: '20px' }}>
-                <li>先访问并信任: <a href="https://192.168.5.27:8443/health" target="_blank" rel="noopener noreferrer">https://192.168.5.27:8443/health</a></li>
-                <li>然后访问: <a href="https://192.168.5.27:3002" target="_blank" rel="noopener noreferrer">https://192.168.5.27:3002</a></li>
+                <li>先访问并信任: <a href="https://192.168.5.46:8443/health" target="_blank" rel="noopener noreferrer">https://192.168.5.46:8443/health</a></li>
+                <li>然后访问: <a href="https://192.168.5.46:3000" target="_blank" rel="noopener noreferrer">https://192.168.5.46:3000</a></li>
               </ol>
               <p style={{ color: '#666', marginTop: '10px' }}>
                 <a href="/cert-guide.html" target="_blank" style={{ color: '#1976d2' }}>证书安装指南</a> | 

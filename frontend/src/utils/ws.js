@@ -2,8 +2,15 @@ function wsBase() {
   if (process.env.REACT_APP_WS_URL) {
     return process.env.REACT_APP_WS_URL.replace(/\/ws\/?$/, '');
   }
-  const { protocol, host, hostname, port } = window.location;
+  const { protocol, hostname, port } = window.location;
+  // CRA 开发服务器 :3000 不提供 /ws，信令固定连后端
+  if (port === '3000' || port === '3002') {
+    return protocol === 'https:'
+      ? `wss://${hostname}:8443`
+      : `ws://${hostname}:8080`;
+  }
   const wsProto = protocol === 'https:' ? 'wss:' : 'ws:';
+  const { host } = window.location;
   if (!port || port === '80' || port === '443') {
     return `${wsProto}//${host}`;
   }

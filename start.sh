@@ -15,11 +15,12 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
-# 启动后端服务器
+# 启动后端服务器（CGO_ENABLED=0 避免 macOS 上 dyld LC_UUID 崩溃）
 echo "📡 启动后端服务器..."
 cd backend
 go mod tidy
-go run main.go &
+CGO_ENABLED=0 go build -o /tmp/webrtc-backend .
+/tmp/webrtc-backend &
 BACKEND_PID=$!
 cd ..
 
@@ -29,6 +30,12 @@ sleep 3
 # 启动前端应用
 echo "🌐 启动前端应用..."
 cd frontend
+
+# 使用 nvm 的 npm（若存在）
+if [ -d "$HOME/.nvm/versions/node" ]; then
+    NVM_NODE="$(ls -1 "$HOME/.nvm/versions/node" 2>/dev/null | tail -1)"
+    export PATH="$HOME/.nvm/versions/node/$NVM_NODE/bin:$PATH"
+fi
 
 # 检查是否已安装依赖
 if [ ! -d "node_modules" ]; then
@@ -42,8 +49,8 @@ cd ..
 
 echo ""
 echo "✅ 应用启动成功！"
-echo "📱 前端地址: http://localhost:3000"
-echo "🔗 后端地址: http://localhost:8080"
+echo "📱 前端地址: https://localhost:3000"
+echo "🔗 后端地址: http://localhost:8080  |  https://localhost:8443"
 echo ""
 echo "按 Ctrl+C 停止所有服务"
 
