@@ -5,9 +5,8 @@ import useNetworkQuality from '../hooks/useNetworkQuality';
 import useActiveSpeaker from '../hooks/useActiveSpeaker';
 import useChat from '../hooks/useChat';
 import useRecording from '../hooks/useRecording';
-import useRoleManager from '../hooks/useRoleManager';
 import ChatPanel from './panels/ChatPanel';
-import NetworkPanel from './panels/NetworkPanel';
+import StableMediaVideo from './StableMediaVideo';
 import UserControlBar from './panels/UserControlBar';
 import { getMeetingWebSocketURL } from '../utils/ws';
 
@@ -21,7 +20,6 @@ function MeetingRoom() {
   const navigate = useNavigate();
 
   const username = searchParams.get('username') || '';
-  const initialRole = searchParams.get('role') || 'anchor';
   const uidStorageKey = `webrtc-uid-${roomId}-${username}`;
   const userId = useRef(
     (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(uidStorageKey)) || uuidv4()
@@ -67,9 +65,14 @@ function MeetingRoom() {
     }
   }, []);
 
-  const roleManager = useRoleManager(initialRole, sendMessage, userId.current);
-  const { qualityLevel, qualityLabel, qualityIcon, qualityColor } = useNetworkQuality(peerConnectionsRef);
-  const { activeSpeakerId, activeSpeakerName } = useActiveSpeaker(remoteStreams, users);
+  const mobile = isMobileDevice();
+  const { qualityLevel, qualityLabel, qualityIcon, qualityColor } = useNetworkQuality(
+    peerConnectionsRef,
+    mobile ? 5000 : 3000
+  );
+  const { activeSpeakerId, activeSpeakerName } = useActiveSpeaker(remoteStreams, users, {
+    enabled: !mobile,
+  });
   const chat = useChat(sendMessage, userId.current, username);
   const recording = useRecording(localStream, remoteStreams);
 
@@ -111,11 +114,6 @@ function MeetingRoom() {
     window.addEventListener('pagehide', onPageHide);
 
     (async () => {
-      if (initialRole === 'audience') {
-        setMediaHint('观众模式：仅观看他人画面。要开启摄像头请在下栏将角色切换为「主播」。');
-        if (!cancelled) connectWebSocket();
-        return;
-      }
       if (!window.isSecureContext && !/^localhost$|^127\./.test(window.location.hostname)) {
         setError('当前非安全连接，无法打开摄像头。请用 https://本机IP:3000 并信任证书。');
         if (!cancelled) connectWebSocket();
@@ -147,16 +145,8 @@ function MeetingRoom() {
     }
   }, [localStream, isScreenSharing, screenStream]);
 
-  const bindLocalVideo = useCallback((el) => {
-    localVideoRef.current = el;
-    if (!el) return;
-    const src = isScreenSharing && screenStream ? screenStream : localStream;
-    if (src && el.srcObject !== src) {
-      el.srcObject = src;
-      el.muted = true;
-      el.play().catch((e) => console.warn('[WebRTC] local play failed:', e));
-    }
-  }, [localStream, screenStream, isScreenSharing]);
+  const localDisplayStream =
+    isScreenSharing && screenStream ? screenStream : localStream;
 
   const flushIceQueue = async (remoteUserId) => {
     const pc = peerConnectionsRef.current.get(remoteUserId);
@@ -183,10 +173,6 @@ function MeetingRoom() {
 
   const initializeMedia = async () => {
     try {
-      if (initialRole === 'audience') {
-        setMediaHint('观众模式不采集摄像头。切换为主播后可开启。');
-        return;
-      }
       if (!window.isSecureContext && !/^localhost$|^127\./.test(window.location.hostname)) {
         setError(
           '当前为 HTTP 访问，浏览器通常不允许摄像头/麦克风。您仍可收看他人的画面；要推流请配置 HTTPS。'
@@ -254,7 +240,7 @@ function MeetingRoom() {
     }
     intentionalCloseRef.current = false;
 
-    const wsUrl = `${getMeetingWebSocketURL()}?userId=${userId.current}&roomId=${roomId}&username=${encodeURIComponent(username)}&role=${encodeURIComponent(initialRole)}`;
+    const wsUrl = `${getMeetingWebSocketURL()}?userId=${userId.current}&roomId=${roomId}&username=${encodeURIComponent(username)}`;
     console.log('[WS] connecting:', wsUrl);
     const ws = new WebSocket(wsUrl);
     websocketRef.current = ws;
@@ -292,14 +278,12 @@ function MeetingRoom() {
   };
 
   const handleWebSocketMessage = async (message) => {
-    roleManager.handleRoleMessage(message);
     chat.handleIncoming(message);
 
     switch (message.type) {
       case 'user-list': {
         const others = (message.data || []).filter((u) => u.id !== userId.current);
         setUsers(others);
-        roleManager.handleRoleMessage(message);
         console.log('[WS] user-list', others.map((u) => u.username).join(','));
         for (const user of others) {
           await connectPeer(user.id);
@@ -312,7 +296,7 @@ function MeetingRoom() {
         if (message.userId !== userId.current) {
           setUsers((prev) => {
             if (prev.some((u) => u.id === message.userId)) return prev;
-            return [...prev, { id: message.userId, username: message.username, role: message.data?.role || 'anchor' }];
+            return [...prev, { id: message.userId, username: message.username }];
           });
           console.log('[WS] user-joined', message.username, message.userId);
           await connectPeer(message.userId);
@@ -333,10 +317,6 @@ function MeetingRoom() {
         break;
       case 'ice-candidate':
         await handleIceCandidate(message);
-        break;
-
-      case 'role-changed':
-        setUsers(prev => prev.map(u => u.id === message.userId ? { ...u, role: message.data?.role || message.data } : u));
         break;
 
       case 'screen-share-start':
@@ -394,6 +374,7 @@ function MeetingRoom() {
       }
       event.track.onended = () => console.log(`[WebRTC] track ended [${event.track.kind}] ${remoteUserId}`);
       setRemoteStreams((prev) => {
+        if (prev.get(remoteUserId) === stream) return prev;
         const m = new Map(prev);
         m.set(remoteUserId, stream);
         return m;
@@ -415,7 +396,8 @@ function MeetingRoom() {
       for (const [id, p] of peerConnectionsRef.current.entries()) {
         parts.push(`${id.slice(0, 6)}:ice=${p.iceConnectionState},conn=${p.connectionState}`);
       }
-      setRtcDebug(parts.join(' | ') || '无 P2P 连接');
+      const next = parts.join(' | ') || '无 P2P 连接';
+      setRtcDebug((prev) => (prev === next ? prev : next));
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -533,23 +515,6 @@ function MeetingRoom() {
     if (t) { t.enabled = !t.enabled; setIsVideoEnabled(t.enabled); }
   };
 
-  const handleChangeRole = (newRole) => {
-    roleManager.changeRole(newRole);
-    if (newRole === 'audience') {
-      setAwaitingMediaGesture(false);
-      setMediaHint('观众模式：仅观看他人画面。要开启摄像头请切换为「主播」。');
-      return;
-    }
-    if (!localStream) {
-      if (isMobileDevice()) {
-        setAwaitingMediaGesture(true);
-        setMediaHint('请点击画面中的按钮，授权摄像头和麦克风。');
-      } else {
-        enableLocalMedia();
-      }
-    }
-  };
-
   const toggleScreenShare = async () => {
     if (isScreenSharing) {
       if (screenStream) screenStream.getTracks().forEach(t => t.stop());
@@ -615,24 +580,21 @@ function MeetingRoom() {
 
   const renderVideoGrid = () => {
     const remoteEntries = Array.from(remoteStreams.entries());
-    const mainUserId = pinnedUserId || activeSpeakerId;
+    // 会议室：默认固定网格，仅用户手动「固定」时才切换大画面（避免发言检测导致布局跳动）
+    const mainUserId = pinnedUserId;
     const mainStream = mainUserId ? remoteStreams.get(mainUserId) : null;
     const mainUser = mainUserId ? users.find(u => u.id === mainUserId) : null;
     const otherEntries = remoteEntries.filter(([id]) => id !== mainUserId);
 
-    if (mainStream) {
+    if (mainStream && pinnedUserId) {
       return (
         <div className="trtc-layout">
           <div className="trtc-main">
             <div className="trtc-main-header">
-              {mainUser?.username || 'Unknown'} 🗣️
-              <button className="btn-icon unpin-btn" onClick={() => setPinnedUserId(null)}>取消固定</button>
+              {mainUser?.username || 'Unknown'} 📌
+              <button type="button" className="btn-icon unpin-btn" onClick={() => setPinnedUserId(null)}>取消固定</button>
             </div>
-            <video
-              className="video"
-              autoPlay playsInline
-              ref={el => { if (el) el.srcObject = mainStream; }}
-            />
+            <StableMediaVideo stream={mainStream} className="video" />
           </div>
           <div className="trtc-sidebar">
             <div className="video-container trtc-filmstrip">
@@ -645,7 +607,7 @@ function MeetingRoom() {
     }
 
     return (
-      <div className="video-container">
+      <div className="video-container meeting-grid">
         {renderLocalVideo()}
         {remoteEntries.map(([rid, stream]) => renderRemoteVideo(rid, stream))}
       </div>
@@ -653,53 +615,39 @@ function MeetingRoom() {
   };
 
   const renderLocalVideo = () => (
-    <div className="video-wrapper local-video" onClick={() => {}}>
-      <video ref={bindLocalVideo} className="video" autoPlay muted playsInline />
+    <div className="video-wrapper local-video">
+      <StableMediaVideo
+        ref={localVideoRef}
+        stream={localDisplayStream}
+        className="video"
+        muted
+      />
       {!localStream && (
         <div className={`video-placeholder ${awaitingMediaGesture ? 'media-tap-overlay' : ''}`}>
-          {awaitingMediaGesture && initialRole !== 'audience' ? (
+          {awaitingMediaGesture ? (
             <button type="button" className="btn media-enable-btn" onClick={enableLocalMedia}>
               📷 开启摄像头和麦克风
             </button>
           ) : (
-            <>
-              {initialRole === 'audience'
-                ? '观众模式（未开启摄像头）'
-                : window.isSecureContext
-                  ? '未开启摄像头'
-                  : 'HTTP 下无法开启本地摄像头'}
-            </>
+            window.isSecureContext ? '未开启摄像头' : 'HTTP 下无法开启本地摄像头'
           )}
         </div>
       )}
       <div className="video-overlay">
         {username} (我)
-        {roleManager.isAnchor ? ' 👑' : ' 👀'}
         {isScreenSharing && ' 🖥️'}
       </div>
-      <NetworkPanel qualityLevel={qualityLevel} qualityLabel={qualityLabel} qualityIcon={qualityIcon} qualityColor={qualityColor} networkStats={{}} />
     </div>
   );
 
   const renderRemoteVideo = (rid, stream) => {
     const user = users.find(u => u.id === rid);
-    const isSpeaking = rid === activeSpeakerId;
+    const isSpeaking = !mobile && rid === activeSpeakerId;
     return (
-      <div key={rid} className={`video-wrapper ${isSpeaking ? 'speaking' : ''}`} onClick={() => setPinnedUserId(rid)}>
-        <video
-          className="video"
-          autoPlay
-          playsInline
-          ref={(el) => {
-            if (el && el.srcObject !== stream) {
-              el.srcObject = stream;
-              el.play().catch((e) => console.warn('[WebRTC] remote play failed:', e));
-            }
-          }}
-        />
+      <div key={rid} className={`video-wrapper ${isSpeaking ? 'speaking' : ''}`}>
+        <StableMediaVideo stream={stream} className="video" />
         <div className="video-overlay">
           {user?.username || 'Unknown'}
-          {roleManager.userRoles[rid] === 'anchor' ? ' 👑' : ' 👀'}
           {isSpeaking && ' 🗣️'}
         </div>
         <button className="pin-btn" onClick={(e) => { e.stopPropagation(); setPinnedUserId(rid); }}>📌</button>
@@ -715,7 +663,9 @@ function MeetingRoom() {
         <div className="room-info">
           <h1>会议室: {roomId}</h1>
           <span className="user-count">👥 {users.length + 1}</span>
-          <span className={`role-badge ${roleManager.role}`}>{roleManager.isAnchor ? '主播' : '观众'}</span>
+          <span className={`connection-badge ${isConnected ? 'connected' : 'disconnected'}`}>
+            {isConnected ? '信令已连接' : '信令未连接'}
+          </span>
         </div>
         <div className="room-actions">
           <button type="button" className="btn btn-sm" onClick={copyRoomId}>📋 复制ID</button>
@@ -745,8 +695,6 @@ function MeetingRoom() {
         isVideoEnabled={isVideoEnabled}
         isRecording={recording.isRecording}
         formattedDuration={recording.formattedDuration}
-        isAnchor={roleManager.isAnchor}
-        role={roleManager.role}
         activeSpeakerName={activeSpeakerName}
         qualityLabel={qualityLabel}
         qualityIcon={qualityIcon}
@@ -755,7 +703,6 @@ function MeetingRoom() {
         onToggleVideo={toggleVideo}
         onToggleRecording={recording.toggleRecording}
         onToggleScreenShare={toggleScreenShare}
-        onChangeRole={handleChangeRole}
         onLeave={leaveRoom}
         onToggleChat={() => setChatOpen(prev => !prev)}
         onTogglePiP={togglePiP}
@@ -772,12 +719,12 @@ function MeetingRoom() {
         <h3>参会人员 ({users.length + 1})</h3>
         <div className="user-item">
           <div className="status-indicator"></div>
-          {username} (我) {roleManager.isAnchor ? '👑' : '👀'}
+          {username} (我)
         </div>
         {users.map(u => (
           <div key={u.id} className="user-item">
             <div className="status-indicator"></div>
-            {u.username} {roleManager.userRoles[u.id] === 'anchor' ? '👑' : roleManager.userRoles[u.id] === 'audience' ? '👀' : ''}
+            {u.username}
           </div>
         ))}
       </div>

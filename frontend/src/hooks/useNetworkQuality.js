@@ -102,12 +102,25 @@ export default function useNetworkQuality(peerConnectionsRef, intervalMs = 3000)
         bitrate = totalBytes * 8 / (intervalMs / 1000) / 1000;
       }
       const level = getQualityLevel({ rtt: avgRtt, packetsLost: avgLost, packetsSent: avgSent, bitrate });
-      setQualityLevel(level);
-      setNetworkStats({ ...stats, _avg: { rtt: avgRtt, packetsLost: avgLost, bitrate, level } });
+      setQualityLevel((prev) => (prev === level ? prev : level));
+      const nextStats = { ...stats, _avg: { rtt: avgRtt, packetsLost: avgLost, bitrate, level } };
+      setNetworkStats((prev) => {
+        const p = prev._avg;
+        if (
+          p &&
+          Math.round(p.rtt) === Math.round(avgRtt) &&
+          Math.round(p.packetsLost) === Math.round(avgLost) &&
+          Math.round(p.bitrate) === Math.round(bitrate) &&
+          p.level === level
+        ) {
+          return prev;
+        }
+        return nextStats;
+      });
     } else if (peerConnectionsRef.current.size > 0) {
-      setQualityLevel('disconnected');
+      setQualityLevel((prev) => (prev === 'disconnected' ? prev : 'disconnected'));
     } else {
-      setQualityLevel('waiting');
+      setQualityLevel((prev) => (prev === 'waiting' ? prev : 'waiting'));
     }
   }, [peerConnectionsRef, intervalMs]);
 

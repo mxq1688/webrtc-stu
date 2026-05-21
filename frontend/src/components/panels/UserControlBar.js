@@ -5,8 +5,6 @@ export default function UserControlBar({
   isVideoEnabled,
   isRecording,
   formattedDuration,
-  isAnchor,
-  role,
   activeSpeakerName,
   qualityLabel,
   qualityIcon,
@@ -15,7 +13,6 @@ export default function UserControlBar({
   onToggleVideo,
   onToggleRecording,
   onToggleScreenShare,
-  onChangeRole,
   onLeave,
   onToggleChat,
   onTogglePiP,
@@ -65,10 +62,6 @@ export default function UserControlBar({
         </button>
         <button className="ctrl-btn" onClick={onToggleChat} title="聊天">💬</button>
         <button className="ctrl-btn" onClick={onTogglePiP} title="画中画">🖼️</button>
-        <select className="role-select" value={role} onChange={e => onChangeRole(e.target.value)} title="角色">
-          <option value="anchor">主播</option>
-          <option value="audience">观众</option>
-        </select>
         <button className="ctrl-btn ctrl-danger" onClick={onLeave} title="离开">🚪</button>
       </div>
     </div>

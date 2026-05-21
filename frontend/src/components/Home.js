@@ -2,29 +2,27 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 
-function buildRoomQuery(username, role) {
+function buildRoomQuery(username) {
   const q = new URLSearchParams();
   q.set('username', username.trim());
-  q.set('role', role);
   return q.toString();
 }
 
 function Home() {
   const [username, setUsername] = useState('');
   const [roomId, setRoomId] = useState('');
-  const [role, setRole] = useState('anchor');
   const navigate = useNavigate();
 
   const handleCreateRoom = () => {
     if (!username.trim()) { alert('请输入用户名'); return; }
     const id = roomId.trim() || uuidv4().substring(0, 8);
-    navigate(`/room/${encodeURIComponent(id)}?${buildRoomQuery(username, role)}`);
+    navigate(`/room/${encodeURIComponent(id)}?${buildRoomQuery(username)}`);
   };
 
   const handleJoinRoom = () => {
     if (!username.trim()) { alert('请输入用户名'); return; }
     if (!roomId.trim()) { alert('请输入房间ID'); return; }
-    navigate(`/room/${encodeURIComponent(roomId.trim())}?${buildRoomQuery(username, role)}`);
+    navigate(`/room/${encodeURIComponent(roomId.trim())}?${buildRoomQuery(username)}`);
   };
 
   return (
@@ -59,14 +57,6 @@ function Home() {
             onKeyPress={e => { if (e.key === 'Enter' && roomId.trim()) handleJoinRoom(); }}
           />
 
-          <div className="role-selector">
-            <label>角色：</label>
-            <select className="role-input" value={role} onChange={e => setRole(e.target.value)}>
-              <option value="anchor">主播（可推流）</option>
-              <option value="audience">观众（仅观看）</option>
-            </select>
-          </div>
-
           <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
             <button className="btn" onClick={handleCreateRoom} style={{ flex: 1 }}>
               {roomId.trim() ? '创建房间' : '创建新房间'}
@@ -78,8 +68,8 @@ function Home() {
         <div style={{ marginTop: '30px', padding: '20px', background: '#f8f9fa', borderRadius: '10px' }}>
           <h3 style={{ color: '#333', marginBottom: '15px' }}>功能说明：</h3>
           <ul style={{ color: '#666', lineHeight: '1.6' }}>
-            <li><strong>主播/观众</strong>：主播可推流音视频，观众仅观看收听</li>
-            <li><strong>屏幕共享</strong>：主播可共享屏幕，自动替换摄像头画面</li>
+            <li><strong>多人音视频</strong>：每位参会者均可开关摄像头、麦克风</li>
+            <li><strong>屏幕共享</strong>：任意参会者可共享屏幕</li>
             <li><strong>发言者检测</strong>：自动高亮正在发言的用户，大画面展示</li>
             <li><strong>网络质量</strong>：实时监测 RTT、丢包、码率，5级质量显示</li>
             <li><strong>会议录制</strong>：支持本地录制会议内容并下载 WebM</li>
@@ -112,7 +102,6 @@ function Home() {
                 </li>
                 <li>输入与电脑<strong>完全相同</strong>的房间号与用户名（区分大小写）</li>
                 <li>进入房间后点击 <strong>「开启摄像头和麦克风」</strong>（手机不会自动弹权限）</li>
-                <li>角色请选 <strong>主播</strong>；选「观众」不会请求摄像头</li>
               </ol>
               <p style={{ color: '#666', marginTop: '10px' }}>
                 <a href="/cert-guide.html" target="_blank" style={{ color: '#1976d2' }}>证书安装指南</a> | 

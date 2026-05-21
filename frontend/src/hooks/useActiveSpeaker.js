@@ -1,10 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-export default function useActiveSpeaker(remoteStreams, users, threshold = 0.05) {
+export default function useActiveSpeaker(remoteStreams, users, options = {}) {
+  const { enabled = true, threshold = options.threshold ?? 0.08 } = options;
   const [activeSpeakerId, setActiveSpeakerId] = useState(null);
   const [activeSpeakerName, setActiveSpeakerName] = useState('');
   const analyzersRef = useRef(new Map());
   const timerRef = useRef(null);
+  const currentIdRef = useRef(null);
+  const lastSwitchRef = useRef(0);
+  const silentSinceRef = useRef(0);
 
   const updateAnalyzers = useCallback(() => {
     const currentKeys = new Set(analyzersRef.current.keys());
@@ -60,30 +64,47 @@ export default function useActiveSpeaker(remoteStreams, users, threshold = 0.05)
       }
     }
 
+    const now = Date.now();
+    const HOLD_MS = 1200;
+    const CLEAR_MS = 1500;
+
     if (maxVolume > threshold && maxUserId) {
-      setActiveSpeakerId(maxUserId);
-      const user = users.find(u => u.id === maxUserId);
-      setActiveSpeakerName(user?.username || '');
+      silentSinceRef.current = 0;
+      const same = currentIdRef.current === maxUserId;
+      const canSwitch = same || now - lastSwitchRef.current >= HOLD_MS;
+      if (canSwitch) {
+        currentIdRef.current = maxUserId;
+        lastSwitchRef.current = now;
+        setActiveSpeakerId(maxUserId);
+        const user = users.find(u => u.id === maxUserId);
+        setActiveSpeakerName(user?.username || '');
+      }
     } else {
-      setActiveSpeakerId(null);
-      setActiveSpeakerName('');
+      if (!silentSinceRef.current) silentSinceRef.current = now;
+      if (now - silentSinceRef.current >= CLEAR_MS && currentIdRef.current) {
+        currentIdRef.current = null;
+        setActiveSpeakerId(null);
+        setActiveSpeakerName('');
+      }
     }
   }, [users, threshold]);
 
   useEffect(() => {
+    if (!enabled) return;
     updateAnalyzers();
-  }, [updateAnalyzers]);
+  }, [enabled, updateAnalyzers]);
 
   useEffect(() => {
-    timerRef.current = setInterval(measure, 200);
+    if (!enabled || remoteStreams.size === 0) {
+      setActiveSpeakerId(null);
+      setActiveSpeakerName('');
+      return undefined;
+    }
+    timerRef.current = setInterval(measure, 500);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      for (const [, entry] of analyzersRef.current.entries()) {
-        try { entry.ctx.close(); } catch (e) {}
-      }
-      analyzersRef.current.clear();
     };
-  }, [measure]);
+  }, [enabled, measure, remoteStreams.size]);
 
   return { activeSpeakerId, activeSpeakerName };
 }
