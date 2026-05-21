@@ -77,8 +77,10 @@ code { font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', mon
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 12px;
   padding: 12px;
   text-align: center;
   color: #adb5bd;
@@ -86,6 +88,23 @@ code { font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', mon
   background: rgba(0, 0, 0, 0.75);
   pointer-events: none;
   z-index: 1;
+}
+.video-placeholder.media-tap-overlay {
+  pointer-events: auto;
+}
+.media-enable-btn {
+  font-size: 16px;
+  padding: 14px 24px;
+  z-index: 3;
+}
+.media-hint {
+  background: #e7f5ff;
+  color: #1864ab;
+  padding: 12px 15px;
+  border-radius: 8px;
+  margin: 10px 0;
+  border: 1px solid #a5d8ff;
+  font-size: 14px;
 }
 .video-overlay {
   position: absolute; bottom: 0; left: 0; right: 0;

@@ -426,14 +426,20 @@ func corsOrigins() []string {
 			return out
 		}
 	}
-	return []string{
+	base := []string{
 		"https://localhost:3000",
 		"http://localhost:3000",
 		"https://127.0.0.1:3000",
-		"https://192.168.5.27:3000",
-		"https://192.168.5.46:3000",
-		"http://192.168.5.46:3000",
+		"http://127.0.0.1:3000",
 	}
+	// 常见局域网 IP（证书/手机访问）；也可用环境变量 ALLOWED_ORIGINS 覆盖
+	for _, ip := range []string{"192.168.5.27", "192.168.5.46", "10.30.102.58"} {
+		base = append(base,
+			"https://"+ip+":3000",
+			"http://"+ip+":3000",
+		)
+	}
+	return base
 }
 
 func main() {

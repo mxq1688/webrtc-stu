@@ -93,11 +93,26 @@ function Home() {
 
           {window.location.protocol === 'https:' && (
             <div style={{ marginTop: '20px', padding: '15px', background: '#e3f2fd', borderRadius: '8px' }}>
-              <h4 style={{ color: '#1976d2', marginTop: 0 }}>📱 移动端访问说明</h4>
-              <p style={{ color: '#666', margin: '10px 0' }}>移动端需要信任SSL证书才能正常使用：</p>
+              <h4 style={{ color: '#1976d2', marginTop: 0 }}>📱 移动端访问说明（须与电脑同一 WiFi）</h4>
+              <p style={{ color: '#666', margin: '10px 0' }}>
+                手机请用电脑同一局域网 IP 访问，并<strong>先信任信令证书</strong>，否则会显示「信令连接失败」：
+              </p>
               <ol style={{ color: '#666', paddingLeft: '20px' }}>
-                <li>先访问并信任: <a href="https://192.168.5.46:8443/health" target="_blank" rel="noopener noreferrer">https://192.168.5.46:8443/health</a></li>
-                <li>然后访问: <a href="https://192.168.5.46:3000" target="_blank" rel="noopener noreferrer">https://192.168.5.46:3000</a></li>
+                <li>
+                  先打开并继续访问:{' '}
+                  <a href={`https://${window.location.hostname}:8443/health`} target="_blank" rel="noopener noreferrer">
+                    {`https://${window.location.hostname}:8443/health`}
+                  </a>
+                </li>
+                <li>
+                  再打开会议页:{' '}
+                  <a href={`https://${window.location.hostname}:3000`} target="_blank" rel="noopener noreferrer">
+                    {`https://${window.location.hostname}:3000`}
+                  </a>
+                </li>
+                <li>输入与电脑<strong>完全相同</strong>的房间号与用户名（区分大小写）</li>
+                <li>进入房间后点击 <strong>「开启摄像头和麦克风」</strong>（手机不会自动弹权限）</li>
+                <li>角色请选 <strong>主播</strong>；选「观众」不会请求摄像头</li>
               </ol>
               <p style={{ color: '#666', marginTop: '10px' }}>
                 <a href="/cert-guide.html" target="_blank" style={{ color: '#1976d2' }}>证书安装指南</a> | 

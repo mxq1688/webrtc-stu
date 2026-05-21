@@ -11,6 +11,10 @@ import NetworkPanel from './panels/NetworkPanel';
 import UserControlBar from './panels/UserControlBar';
 import { getMeetingWebSocketURL } from '../utils/ws';
 
+function isMobileDevice() {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
 function MeetingRoom() {
   const { roomId } = useParams();
   const [searchParams] = useSearchParams();
@@ -31,6 +35,8 @@ function MeetingRoom() {
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState('');
+  const [mediaHint, setMediaHint] = useState('');
+  const [awaitingMediaGesture, setAwaitingMediaGesture] = useState(false);
   const [pinnedUserId, setPinnedUserId] = useState(null);
   const [rtcDebug, setRtcDebug] = useState('');
 
@@ -105,6 +111,22 @@ function MeetingRoom() {
     window.addEventListener('pagehide', onPageHide);
 
     (async () => {
+      if (initialRole === 'audience') {
+        setMediaHint('观众模式：仅观看他人画面。要开启摄像头请在下栏将角色切换为「主播」。');
+        if (!cancelled) connectWebSocket();
+        return;
+      }
+      if (!window.isSecureContext && !/^localhost$|^127\./.test(window.location.hostname)) {
+        setError('当前非安全连接，无法打开摄像头。请用 https://本机IP:3000 并信任证书。');
+        if (!cancelled) connectWebSocket();
+        return;
+      }
+      if (isMobileDevice()) {
+        setAwaitingMediaGesture(true);
+        setMediaHint('iOS/Android 需要您点击按钮后才会弹出摄像头授权。');
+        if (!cancelled) connectWebSocket();
+        return;
+      }
       await initializeMedia();
       if (!cancelled) connectWebSocket();
     })();
@@ -150,8 +172,21 @@ function MeetingRoom() {
     }
   };
 
+  const enableLocalMedia = async () => {
+    setAwaitingMediaGesture(false);
+    setMediaHint('');
+    await initializeMedia();
+    for (const [, pc] of peerConnectionsRef.current.entries()) {
+      attachLocalTracks(pc);
+    }
+  };
+
   const initializeMedia = async () => {
     try {
+      if (initialRole === 'audience') {
+        setMediaHint('观众模式不采集摄像头。切换为主播后可开启。');
+        return;
+      }
       if (!window.isSecureContext && !/^localhost$|^127\./.test(window.location.hostname)) {
         setError(
           '当前为 HTTP 访问，浏览器通常不允许摄像头/麦克风。您仍可收看他人的画面；要推流请配置 HTTPS。'
@@ -176,6 +211,8 @@ function MeetingRoom() {
       setLocalStream(stream);
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
       setError('');
+      setMediaHint('');
+      setAwaitingMediaGesture(false);
     } catch (err) {
       handleMediaError(err);
     }
@@ -478,17 +515,38 @@ function MeetingRoom() {
     setRemoteStreams(prev => { const m = new Map(prev); m.delete(rId); return m; });
   };
 
-  const toggleAudio = () => {
-    if (localStream) {
-      const t = localStream.getAudioTracks()[0];
-      if (t) { t.enabled = !t.enabled; setIsAudioEnabled(t.enabled); }
+  const toggleAudio = async () => {
+    if (!localStream) {
+      await enableLocalMedia();
+      return;
     }
+    const t = localStream.getAudioTracks()[0];
+    if (t) { t.enabled = !t.enabled; setIsAudioEnabled(t.enabled); }
   };
 
-  const toggleVideo = () => {
-    if (localStream) {
-      const t = localStream.getVideoTracks()[0];
-      if (t) { t.enabled = !t.enabled; setIsVideoEnabled(t.enabled); }
+  const toggleVideo = async () => {
+    if (!localStream) {
+      await enableLocalMedia();
+      return;
+    }
+    const t = localStream.getVideoTracks()[0];
+    if (t) { t.enabled = !t.enabled; setIsVideoEnabled(t.enabled); }
+  };
+
+  const handleChangeRole = (newRole) => {
+    roleManager.changeRole(newRole);
+    if (newRole === 'audience') {
+      setAwaitingMediaGesture(false);
+      setMediaHint('观众模式：仅观看他人画面。要开启摄像头请切换为「主播」。');
+      return;
+    }
+    if (!localStream) {
+      if (isMobileDevice()) {
+        setAwaitingMediaGesture(true);
+        setMediaHint('请点击画面中的按钮，授权摄像头和麦克风。');
+      } else {
+        enableLocalMedia();
+      }
     }
   };
 
@@ -598,8 +656,20 @@ function MeetingRoom() {
     <div className="video-wrapper local-video" onClick={() => {}}>
       <video ref={bindLocalVideo} className="video" autoPlay muted playsInline />
       {!localStream && (
-        <div className="video-placeholder">
-          {window.isSecureContext ? '未开启摄像头' : 'HTTP 下无法开启本地摄像头'}
+        <div className={`video-placeholder ${awaitingMediaGesture ? 'media-tap-overlay' : ''}`}>
+          {awaitingMediaGesture && initialRole !== 'audience' ? (
+            <button type="button" className="btn media-enable-btn" onClick={enableLocalMedia}>
+              📷 开启摄像头和麦克风
+            </button>
+          ) : (
+            <>
+              {initialRole === 'audience'
+                ? '观众模式（未开启摄像头）'
+                : window.isSecureContext
+                  ? '未开启摄像头'
+                  : 'HTTP 下无法开启本地摄像头'}
+            </>
+          )}
         </div>
       )}
       <div className="video-overlay">
@@ -653,6 +723,7 @@ function MeetingRoom() {
       </div>
 
       {error && <div className="error">{error}</div>}
+      {mediaHint && !error && <div className="media-hint">{mediaHint}</div>}
 
       <div className="meeting-body">
         <div className="meeting-main">
@@ -684,7 +755,7 @@ function MeetingRoom() {
         onToggleVideo={toggleVideo}
         onToggleRecording={recording.toggleRecording}
         onToggleScreenShare={toggleScreenShare}
-        onChangeRole={roleManager.changeRole}
+        onChangeRole={handleChangeRole}
         onLeave={leaveRoom}
         onToggleChat={() => setChatOpen(prev => !prev)}
         onTogglePiP={togglePiP}
